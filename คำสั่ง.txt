@@ -1,0 +1,21 @@
+conda activate vora
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+
+
+
+
+cd frontend
+python -m http.server 9000
+
+
+
+export OLLAMA_TIMEOUT=600
+export OLLAMA_KEEP_ALIVE=30m
+export OLLAMA_JSON_MAX_TOKENS=200
+export SEARXNG_URL=http://127.0.0.1:8080
+# (ออปชัน) เร่งความไว
+export OLLAMA_MODEL=gemma3:12b-it-qat
+export OLLAMA_REFINE_MODEL=gemma3n:e4b
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000

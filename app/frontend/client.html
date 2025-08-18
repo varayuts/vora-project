@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="th">
+<meta charset="utf-8" />
+<title>VORA Realtime STT + LLM (Chat UI + Agent)</title>
+<style>
+  :root{
+    --bg:#0b0f14; --fg:#e6edf3; --muted:#9fb0c0; --card:#0e1318; --btn:#161b22; --btnh:#1f2630; --accent:#4cc2ff;
+  }
+  *{ box-sizing:border-box }
+  body{ font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto; margin:24px; background:var(--bg); color:var(--fg); }
+  .row{ display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }
+  input,button{ padding:10px 12px; border-radius:12px; border:1px solid #2d333b; background:var(--btn); color:var(--fg) }
+  button{ cursor:pointer } button:hover{ background:var(--btnh) }
+  .pill{ padding:4px 8px; border-radius:999px; background:#0c1622; border:1px solid #1b2633; color:var(--muted); font-size:12px }
+  .card{ background:var(--card); border:1px solid #1b2633; border-radius:14px; padding:14px }
+  .accent{ color:var(--accent) }
+  #status{ margin-left:8px; color:var(--muted) }
+  h2{ margin:0 0 12px 0 } h3{ margin:0 0 8px 0; color:#b9c6d3 }
+  .grid{ display:grid; grid-template-columns:1fr 1.2fr; gap:12px }
+  pre{ margin:0; white-space:pre-wrap; word-break:break-word }
+  #chatWrap{ display:flex; flex-direction:column; height:60vh; gap:10px }
+  #chat{ flex:1; overflow:auto; padding-right:4px }
+  .msg{ max-width:85%; margin:8px 0; padding:10px 12px; border-radius:14px; background:#0f1720; border:1px solid #1b2633; line-height:1.5 }
+  .user { align-self:flex-end; background:#0f1a26; border-color:#16324a }
+  .agent{ align-self:center; background:#111522; border-color:#223055; opacity:.95 }
+  .asst { align-self:flex-start; background:#0f1a15; border-color:#173425 }
+  .tag{ font-size:12px; opacity:.85; margin-bottom:6px }
+  .tag .u{ color:#9ccaff } .tag .a{ color:#9fe3b4 } .tag .g{ color:#8bb1ff }
+  .spinner{ width:14px; height:14px; border:2px solid #2a3340; border-top-color:#8ab9ff; border-radius:50%; display:inline-block; animation:spin .9s linear infinite; vertical-align:middle; margin-right:6px }
+  @keyframes spin{ to{ transform:rotate(360deg) } }
+  a { color:#7fd1ff; text-decoration:none }
+  a:hover{ text-decoration:underline }
+  .mode { display:flex; gap:12px; align-items:center; }
+  .mode label { display:flex; gap:6px; align-items:center; cursor:pointer }
+</style>
+
+<div class="row">
+  <h2>VORA <span class="accent">Realtime STT</span> + LLM</h2>
+  <span id="status" class="pill">idle</span>
+</div>
+
+<div class="row">
+  <label>API</label>
+  <input id="api" size="28" value="http://localhost:8000">
+  <label>WS</label>
+  <input id="ws" size="42" value="ws://localhost:8000/ws/stt?lang=th">
+  <span class="pill" id="sidpill"></span>
+</div>
+
+<div class="card" style="margin-bottom:12px; display:flex; gap:12px; flex-wrap:wrap; align-items:center">
+  <button id="start">Start</button>
+  <button id="stop">Stop</button>
+  <button id="restart">Restart</button>
+  <button id="reset">Reset</button>
+
+  <div class="mode">
+    <span class="pill">โหมดคำตอบ:</span>
+    <label class="pill"><input type="radio" name="mode" value="never" checked> ตอบเร็ว (ไม่ค้นเว็บ)</label>
+    <label class="pill"><input type="radio" name="mode" value="always"> ค้นเว็บเพิ่ม (ช้าลง)</label>
+  </div>
+
+  <label class="pill"><input id="autoLLM" type="checkbox" checked> Auto ask LLM</label>
+  <button id="askllm">Ask LLM now</button>
+  <button id="clear">Clear chat</button>
+  <span class="pill">mic: echoCancellation / noiseSuppression / autoGainControl</span>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>Transcript (live)</h3>
+    <pre id="text"></pre>
+  </div>
+  <div class="card" id="chatWrap">
+    <h3 style="margin-bottom:6px">Chat</h3>
+    <div id="chat"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---- session id (คงอยู่จนกด Reset) ----
+  const SID = (() => {
+    try {
+      const K = 'vora_sid';
+      let v = localStorage.getItem(K);
+      if (!v) { v = crypto.randomUUID(); localStorage.setItem(K, v); }
+      return v;
+    } catch { return Math.random().toString(36).slice(2); }
+  })();
+  document.getElementById('sidpill').textContent = 'sid: ' + SID.slice(0,8) + '…';
+
+  const apiInput = document.getElementById('api');
+  const wsInput  = document.getElementById('ws');
+  const btnStart = document.getElementById('start');
+  const btnStop  = document.getElementById('stop');
+  const btnRestart = document.getElementById('restart');
+  const btnReset = document.getElementById('reset');
+  const btnAsk   = document.getElementById('askllm');
+  const btnClear = document.getElementById('clear');
+  const autoLLM  = document.getElementById('autoLLM');
+  const modeEls  = Array.from(document.querySelectorAll('input[name="mode"]'));
+
+  const statusEl = document.getElementById('status');
+  const textEl   = document.getElementById('text');
+  const chat     = document.getElementById('chat');
+
+  let ws, rec, stream;
+  let lastFinal = "";
+  let greeted = false;
+
+  function getMode(){
+    const el = modeEls.find(x => x.checked);
+    return el ? el.value : "never"; // "never" | "always"
+  }
+
+  function setStatus(s){ statusEl.textContent = s; console.log('[status]', s); }
+  function clearText(){ textEl.textContent = ''; lastFinal = ""; }
+  function scrollChat(){ chat.scrollTop = chat.scrollHeight; }
+
+  function addMsg(role, title, text, pending=false){
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + role;
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    if(role==='user') tag.innerHTML = '<span class="u">คุณ</span>';
+    else if(role==='asst') tag.innerHTML = '<span class="a">ผู้ช่วย</span>';
+    else tag.innerHTML = '<span class="g">Agent</span>';
+    if(title){ const b = document.createElement('b'); b.textContent = ' ' + title; tag.appendChild(b); }
+    const content = document.createElement('div'); content.textContent = text || '';
+    wrap.appendChild(tag);
+    if(pending){
+      const sp = document.createElement('span'); sp.className = 'spinner'; tag.prepend(sp);
+    }
+    wrap.appendChild(content);
+    chat.appendChild(wrap); scrollChat();
+    return {wrap, content, tag};
+  }
+  function setPendingDone(ref, text){
+    const sp = ref.tag.querySelector('.spinner'); if(sp) sp.remove();
+    ref.content.textContent = text || ''; scrollChat();
+  }
+
+  async function openWS() {
+    return new Promise((resolve, reject) => {
+      try {
+        const base = wsInput.value.trim();
+        let url;
+        try { url = new URL(base); } catch { url = new URL(base, window.location.href); }
+        url.searchParams.set('sid', SID);   // ใช้ล้าง memory ตอน RESET
+        ws = new WebSocket(url.toString());
+        ws.binaryType = 'arraybuffer';
+        ws.onopen = () => { setStatus('connected'); resolve(); };
+        ws.onclose = () => setStatus('disconnected');
+        ws.onerror = (e) => { console.error(e); setStatus('ws error'); reject(e); };
+        ws.onmessage = (ev) => {
+          try {
+            const m = JSON.parse(ev.data);
+            if (m.type === 'partial') textEl.textContent = m.text;
+            if (m.type === 'final') {
+              lastFinal = m.text; textEl.textContent = m.text;
+              addMsg('user', null, lastFinal);
+              if (autoLLM.checked) runPipeline(lastFinal);
+            }
+            if (m.type === 'reset_ok') setStatus('reset ok');
+            if (m.type === 'stopped')  setStatus('stopped (ws open)');
+            if (m.type === 'started')  setStatus('started');
+            if (m.error) setStatus('server: ' + m.error);
+          } catch { textEl.textContent = String(ev.data || ''); }
+        };
+      } catch (e) { reject(e); }
+    });
+  }
+
+  async function startRecording() {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true }
+    });
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : 'audio/ogg;codecs=opus';
+    rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 32000 });
+    rec.ondataavailable = async (ev) => {
+      if (ev.data && ev.data.size > 0 && ws && ws.readyState === 1) {
+        ws.send(await ev.data.arrayBuffer());
+      }
+    };
+    rec.onstart = () => setStatus('recording…');
+    rec.start(250);
+  }
+  async function stopOnly(){
+    if (rec && rec.state !== 'inactive') rec.stop();
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    if (ws && ws.readyState === 1) ws.send('STOP');
+    setStatus('stopped (ws open)');
+  }
+  async function stopAll(closeWS=false){
+    if (rec && rec.state !== 'inactive') rec.stop();
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    if (ws && ws.readyState === 1 && closeWS) { ws.send('CLOSE'); ws.close(); }
+  }
+
+  // ========== Pipeline: /agent/answer (refine → search? → llm) ==========
+  async function runPipeline(text){
+    const api = apiInput.value.trim().replace(/\/+$/,'');
+    const mode = getMode(); // "never" (เร็ว) หรือ "always" (ค้นเว็บ)
+    const pendingAgent = addMsg('agent', 'กำลังกำจัด noise/ทำความเข้าใจ…', '', true);
+    const pendingAsst  = addMsg('asst', 'กำลังคิด…', '', true);
+
+    try {
+      const r = await fetch(api + "/agent/answer", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          text,
+          session_id: SID,
+          lang_hint: "th",
+          topk: 3,
+          search_when: mode   // << โหมดที่คุณเลือก
+        })
+      });
+      if (!r.ok) {
+        setPendingDone(pendingAgent, "Agent error: HTTP " + r.status);
+        setPendingDone(pendingAsst,  "Agent error: HTTP " + r.status);
+        return;
+      }
+      const j = await r.json();
+
+      // แสดงผล refine จากเซิร์ฟเวอร์ (ชัด ๆ)
+      if (j && j.refine) {
+        const ref = j.refine;
+        const lines = [
+          `🎯 ${ref.clean_text}`,
+          `intent=${ref.intent}, lang=${ref.language}`,
+          mode === 'never' ? 'โหมด: ตอบเร็ว (ไม่ค้นเว็บ)' : 'โหมด: ค้นเว็บเพิ่ม'
+        ];
+        setPendingDone(pendingAgent, lines.join('\n'));
+      } else {
+        setPendingDone(pendingAgent, "ไม่มีข้อมูล refine");
+      }
+
+      // คำตอบ + แหล่งอ้างอิงถ้ามี
+      let txt = j.answer || "(empty response)";
+      if (Array.isArray(j.sources) && j.sources.length > 0) {
+        const links = j.sources.map(s => `• ${s.title} — ${s.url}`).join('\n');
+        txt += `\n\nแหล่งอ้างอิง:\n${links}`;
+      }
+      setPendingDone(pendingAsst, txt);
+
+    } catch (e) {
+      const msg = "Agent error: " + (e?.message || e);
+      setPendingDone(pendingAgent, msg);
+      setPendingDone(pendingAsst,  msg);
+    }
+  }
+
+  // Buttons
+  btnStart.onclick = async () => {
+    try {
+      await stopAll(true);
+      clearText();
+      await openWS();
+      await startRecording();
+      if (!greeted) {
+        addMsg('asst', null, 'เริ่มฟังแล้วนะครับ พูดได้เลย');
+        greeted = true;
+      }
+    } catch (e) { setStatus('start error: ' + (e?.message || e)); }
+  };
+  btnStop.onclick = async () => { await stopOnly(); };
+  btnRestart.onclick = async () => {
+    if (ws && ws.readyState === 1) ws.send('RESET');
+    await stopOnly();
+    await startRecording();
+    setStatus('restarted & recording');
+  };
+  btnReset.onclick = async () => {
+    await stopAll(true);
+    clearText();
+    setStatus('idle');
+    greeted = false;
+    // ล้าง session memory ในเซิร์ฟเวอร์ (ยังคงใช้ SID เดิมได้)
+    try {
+      const api = apiInput.value.trim().replace(/\/+$/,'');
+      await fetch(api + "/agent/memory/clear", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ session_id: SID })
+      });
+    } catch {}
+  };
+  btnClear.onclick = () => { chat.innerHTML = ''; };
+  btnAsk.onclick   = () => {
+    const p = lastFinal || textEl.textContent || '';
+    if (!p) return;
+    addMsg('user', null, p);
+    runPipeline(p);
+  };
+})();
+</script>
+</html>

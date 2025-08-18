@@ -1,0 +1,123 @@
+# app/core/agent.py
+from typing import Tuple, List
+import re
+
+from ..providers.llm.ollama import OllamaProvider
+from ..providers.search.searxng import SearxNGProvider
+from ..schemas.agent import RefineResult
+from ..core.settings import settings
+from .memory import MEMORY
+
+LLM_ANSWER = OllamaProvider()
+LLM_REFINE = OllamaProvider(model=(settings.OLLAMA_REFINE_MODEL or settings.OLLAMA_MODEL))
+SEARCH = SearxNGProvider()
+
+REFINE_SYSTEM = (
+    "คุณคือตัวกรอง STT ภาษาไทย ให้ส่ง JSON ตรงตาม schema นี้เท่านั้น:\n"
+    "{"
+    '"language":"...",'
+    '"intent":"ask|search|navigate|chitchat|other",'
+    '"clean_text":"...",'
+    '"short_prompt":"...",'
+    '"search_query":"...",'
+    '"entities":[{"type":"...","text":"..."}],'
+    '"needs_more_info":true|false,'
+    '"missing_info":["..."],'
+    '"must_search":true|false,'
+    '"final_prompt":"...",'
+    '"notes":""'
+    "}\n"
+    "- ห้ามใส่ Markdown หรือข้อความอื่นนอก JSON\n"
+    "- แก้คำซ้ำ/สะกดผิดเล็กน้อยใน clean_text\n"
+    "- short_prompt <= 20 คำ, search_query เน้นคีย์เวิร์ดค้นเว็บ\n"
+)
+
+_TH_FIX = {
+    "หมาสมุด": "ห้องสมุด",
+    "มหาวิทยาลัยพระจอม 9 พระนครเหนือ": "มหาวิทยาลัยพระจอมเกล้าพระนครเหนือ",
+    "มหาวิทยาลัยเทคโนโลยีพจ.": "มหาวิทยาลัยเทคโนโลยีพระจอมเกล้า",
+}
+_TH_STOP = set("ช่วย หน่อย ล่าสุด ตอนนี้ สรุป สถานการณ์ เกี่ยวกับ ให้หน่อย ยังไง ทางไหน ไปทางไหน บอกทาง".split())
+
+def _normalize_typos(s: str) -> str:
+    out = s
+    for k, v in _TH_FIX.items():
+        out = out.replace(k, v)
+    out = re.sub(r"([ก-๙A-Za-z])\1+", r"\1", out)  # ผผม -> ผม
+    return out
+
+def _shorten_query(q: str) -> str:
+    q2 = re.sub(r"[^0-9A-Za-zก-๙\s]", " ", q)
+    toks = [t for t in q2.split() if t and t not in _TH_STOP]
+    return " ".join(toks) if toks else q.strip()
+
+def refine(text: str, lang_hint: str = "th") -> RefineResult:
+    text = _normalize_typos(text)
+    data = LLM_REFINE.generate_json(
+        system=REFINE_SYSTEM,
+        prompt=f"lang_hint={lang_hint or 'auto'}\nraw_text: {text}\n",
+        temperature=0.1, top_p=0.9, max_tokens=settings.OLLAMA_JSON_MAX_TOKENS
+    )
+    language = data.get("language") or (lang_hint or "th")
+    clean_text = data.get("clean_text") or text
+    short_prompt = data.get("short_prompt") or clean_text
+    search_query = data.get("search_query") or _shorten_query(clean_text)
+    return RefineResult(
+        language=language,
+        intent=(data.get("intent") or "other"),
+        clean_text=clean_text.strip(),
+        short_prompt=short_prompt.strip(),
+        search_query=search_query.strip(),
+        entities=[e for e in (data.get("entities") or []) if isinstance(e, dict) and e.get("text")],
+        needs_more_info=bool(data.get("needs_more_info", False)),
+        missing_info=[m for m in (data.get("missing_info") or []) if isinstance(m, str)],
+        must_search=bool(data.get("must_search", False)),
+        final_prompt=(data.get("final_prompt") or short_prompt or clean_text).strip(),
+        notes=data.get("notes") or ""
+    )
+
+def _search_context(primary_query: str, topk: int = 3) -> Tuple[str, list]:
+    res = SEARCH.search(primary_query, num=topk)
+    if not res:
+        res = SEARCH.search(_shorten_query(primary_query), num=topk)
+    if not res:
+        res = SEARCH.search(primary_query, engine="wikipedia", num=topk)
+
+    sources = [{"title": r.title, "url": r.url, "engine": r.engine} for r in res]
+    bullets = [f"- {r.title} — {r.snippet} (source: {r.url})" for r in res if r.url]
+    context = "ข้อมูลจากเว็บ:\n" + "\n".join(bullets) if bullets else ""
+    return context, sources
+
+def answer(refine_res: RefineResult, search_when: str = "always", topk: int = 3, session_id: str | None = None) -> Tuple[str, list]:
+    # memory → context
+    memory_ctx = MEMORY.compose_context(session_id) if session_id else ""
+    memory_block = f"บริบทก่อนหน้า:\n{memory_ctx}\n\n" if memory_ctx else ""
+
+    context, sources = ("", [])
+    should_search = refine_res.must_search or (search_when in ("always", "auto") and refine_res.intent in {"ask","search","navigate"})
+    if should_search:
+        context, sources = _search_context(refine_res.search_query or refine_res.clean_text, topk=topk)
+
+    system = (
+        "You are a helpful Thai assistant.\n"
+        "- Use ONLY the provided context/memory for facts/directions.\n"
+        "- If context is insufficient or ambiguous, ask a brief follow-up in Thai.\n"
+        "- Cite URLs inline when referencing facts.\n"
+        "- Be concise."
+    )
+    base_prompt = refine_res.short_prompt or refine_res.final_prompt or refine_res.clean_text
+    prompt = f"{memory_block}{base_prompt}"
+    if context:
+        prompt += f"\n\n{context}"
+
+    reply = LLM_ANSWER.generate(prompt=prompt, system=system, temperature=0.3, top_p=0.9, max_tokens=320).strip()
+    if not reply:
+        reply = LLM_ANSWER.generate(prompt=base_prompt, system=system, temperature=0.5, top_p=0.95, max_tokens=320).strip()
+    if not reply:
+        reply = "ขอรายละเอียดเพิ่มนิดนึงครับ เช่น จุดเริ่มต้นที่ชัดเจนหรืออาคารใกล้เคียง"
+
+    # เก็บ memory ถ้ามี session
+    if session_id:
+        MEMORY.add(session_id, "assistant", reply)
+
+    return reply, sources

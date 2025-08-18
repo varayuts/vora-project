@@ -1,0 +1,27 @@
+name: vora
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - ffmpeg
+  - libsndfile
+  - pysoundfile
+  - numpy
+  - uvicorn
+  - fastapi
+  - websockets
+  - pydub
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - cudnn
+  - pip:
+      - openai-whisper
+      - faster-whisper
+      - piper-tts
+      - python-multipart
