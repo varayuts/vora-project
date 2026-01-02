@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="th">
 <meta charset="utf-8" />
-<title>VORA Realtime STT + LLM (Chat UI + Agent)</title>
+<title>VORA Realtime STT + LLM (Manual LLM + Long Context)</title>
 <style>
   :root{
     --bg:#0b0f14; --fg:#e6edf3; --muted:#9fb0c0; --card:#0e1318; --btn:#161b22; --btnh:#1f2630; --accent:#4cc2ff;
@@ -27,16 +27,12 @@
   .tag{ font-size:12px; opacity:.85; margin-bottom:6px }
   .tag .u{ color:#9ccaff } .tag .a{ color:#9fe3b4 } .tag .g{ color:#8bb1ff }
   .spinner{ width:14px; height:14px; border:2px solid #2a3340; border-top-color:#8ab9ff; border-radius:50%; display:inline-block; animation:spin .9s linear infinite; vertical-align:middle; margin-right:6px }
-  @keyframes spin{ to{ transform:rotate(360deg) } }
-  a { color:#7fd1ff; text-decoration:none }
-  a:hover{ text-decoration:underline }
-  .mode { display:flex; gap:12px; align-items:center; }
-  .mode label { display:flex; gap:6px; align-items:center; cursor:pointer }
 </style>
 
 <div class="row">
   <h2>VORA <span class="accent">Realtime STT</span> + LLM</h2>
   <span id="status" class="pill">idle</span>
+  <span id="sttmeta" class="pill"></span>
 </div>
 
 <div class="row">
@@ -59,7 +55,20 @@
     <label class="pill"><input type="radio" name="mode" value="always"> ค้นเว็บเพิ่ม (ช้าลง)</label>
   </div>
 
-  <label class="pill"><input id="autoLLM" type="checkbox" checked> Auto ask LLM</label>
+  <div class="mode">
+    <span class="pill">ช่วงตัดคำ (STT):</span>
+    <label class="pill"><input type="radio" name="chunk" value="short"> สั้น</label>
+    <label class="pill"><input type="radio" name="chunk" value="medium" checked> กลาง</label>
+    <label class="pill"><input type="radio" name="chunk" value="long"> ยาว</label>
+  </div>
+
+  <!-- Auto LLM = manual เท่านั้น -->
+  <!-- TTS ปิด auto ไว้ก่อนได้ (ตอน backend 500) -->
+  <label class="pill"><input id="autoTTS" type="checkbox"> Auto TTS</label>
+  <button id="btnSpeak">🔊 Speak</button>
+  <span id="ttsStatus" class="pill">TTS idle</span>
+  <audio id="ttsAudio" controls style="width:320px; max-width:100%"></audio>
+
   <button id="askllm">Ask LLM now</button>
   <button id="clear">Clear chat</button>
   <span class="pill">mic: echoCancellation / noiseSuppression / autoGainControl</span>
@@ -78,7 +87,7 @@
 
 <script>
 (() => {
-  // ---- session id (คงอยู่จนกด Reset) ----
+  // ---- session id ----
   const SID = (() => {
     try {
       const K = 'vora_sid';
@@ -89,32 +98,43 @@
   })();
   document.getElementById('sidpill').textContent = 'sid: ' + SID.slice(0,8) + '…';
 
-  const apiInput = document.getElementById('api');
-  const wsInput  = document.getElementById('ws');
-  const btnStart = document.getElementById('start');
-  const btnStop  = document.getElementById('stop');
+  const apiInput   = document.getElementById('api');
+  const wsInput    = document.getElementById('ws');
+  const btnStart   = document.getElementById('start');
+  const btnStop    = document.getElementById('stop');
   const btnRestart = document.getElementById('restart');
-  const btnReset = document.getElementById('reset');
-  const btnAsk   = document.getElementById('askllm');
-  const btnClear = document.getElementById('clear');
-  const autoLLM  = document.getElementById('autoLLM');
-  const modeEls  = Array.from(document.querySelectorAll('input[name="mode"]'));
+  const btnReset   = document.getElementById('reset');
+  const btnAsk     = document.getElementById('askllm');
+  const btnClear   = document.getElementById('clear');
 
-  const statusEl = document.getElementById('status');
-  const textEl   = document.getElementById('text');
-  const chat     = document.getElementById('chat');
+  const btnSpeak   = document.getElementById('btnSpeak');
+  const autoTTS    = document.getElementById('autoTTS');
+  const ttsStatus  = document.getElementById('ttsStatus');
+  const ttsAudio   = document.getElementById('ttsAudio');
+
+  const statusEl   = document.getElementById('status');
+  const sttMetaEl  = document.getElementById('sttmeta');
+  const textEl     = document.getElementById('text');
+  const chat       = document.getElementById('chat');
+
+  const modeEls    = Array.from(document.querySelectorAll('input[name="mode"]'));
 
   let ws, rec, stream;
-  let lastFinal = "";
   let greeted = false;
+  let lastLLMText = "";
+  let ctxText = "";  // buffer เก็บหลาย ๆ final ให้เป็น context ยาว
 
+  function getChunk(){
+    const els = Array.from(document.querySelectorAll('input[name="chunk"]'));
+    const el = els.find(x => x.checked);
+    return el ? el.value : 'medium';
+  }
   function getMode(){
     const el = modeEls.find(x => x.checked);
-    return el ? el.value : "never"; // "never" | "always"
+    return el ? el.value : "never";
   }
-
   function setStatus(s){ statusEl.textContent = s; console.log('[status]', s); }
-  function clearText(){ textEl.textContent = ''; lastFinal = ""; }
+  function clearText(){ textEl.textContent = ''; }
   function scrollChat(){ chat.scrollTop = chat.scrollHeight; }
 
   function addMsg(role, title, text, pending=false){
@@ -126,7 +146,7 @@
     else if(role==='asst') tag.innerHTML = '<span class="a">ผู้ช่วย</span>';
     else tag.innerHTML = '<span class="g">Agent</span>';
     if(title){ const b = document.createElement('b'); b.textContent = ' ' + title; tag.appendChild(b); }
-    const content = document.createElement('div'); content.textContent = text || '';
+    const content = document.createElement('div'); content.className = 'text'; content.textContent = text || '';
     wrap.appendChild(tag);
     if(pending){
       const sp = document.createElement('span'); sp.className = 'spinner'; tag.prepend(sp);
@@ -140,33 +160,104 @@
     ref.content.textContent = text || ''; scrollChat();
   }
 
+  // ===== TTS helper (ใช้ทีหลัง ตอน backend พร้อม) =====
+  async function speakText(text) {
+    if (!text || !text.trim()) return;
+    const api = apiInput.value.trim().replace(/\/+$/,'');
+    const endpoint = api + '/api/tts/speak'; // ถ้า backend ใช้ path อื่นค่อยเปลี่ยน
+    ttsStatus.textContent = 'TTS: synthesizing…';
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text, sample_rate_hz: 22050, format: 'wav' })
+      });
+      if (!resp.ok) {
+        const err = await resp.text().catch(()=>String(resp.status));
+        throw new Error(`HTTP ${resp.status} – ${err}`);
+      }
+      const blob = await resp.blob();
+      const url  = URL.createObjectURL(blob);
+      ttsAudio.src = url;
+
+      try { await ttsAudio.play(); }
+      catch {}
+
+      ttsStatus.textContent = 'TTS: playing ✓';
+    } catch (e) {
+      console.error(e);
+      ttsStatus.textContent = 'TTS error';
+      alert('TTS error: ' + (e?.message || e));
+    }
+  }
+
+  function sendToLLM(text, lang) {
+    const t = (text || '').trim();
+    if (!t) return;
+    // กันยิงซ้ำข้อความเดิมเป๊ะ
+    if (t === lastLLMText) {
+      console.log('[LLM] skip duplicate:', t);
+      return;
+    }
+    lastLLMText = t;
+    runPipeline(t, lang || 'th');
+  }
+
   async function openWS() {
     return new Promise((resolve, reject) => {
       try {
         const base = wsInput.value.trim();
         let url;
         try { url = new URL(base); } catch { url = new URL(base, window.location.href); }
-        url.searchParams.set('sid', SID);   // ใช้ล้าง memory ตอน RESET
+        url.searchParams.set('sid', SID);
+        url.searchParams.set('chunk', getChunk());
         ws = new WebSocket(url.toString());
         ws.binaryType = 'arraybuffer';
+
         ws.onopen = () => { setStatus('connected'); resolve(); };
         ws.onclose = () => setStatus('disconnected');
         ws.onerror = (e) => { console.error(e); setStatus('ws error'); reject(e); };
+
+        // ========= STT events → UI + เก็บ context เท่านั้น =========
         ws.onmessage = (ev) => {
           try {
             const m = JSON.parse(ev.data);
-            if (m.type === 'partial') textEl.textContent = m.text;
-            if (m.type === 'final') {
-              lastFinal = m.text; textEl.textContent = m.text;
-              addMsg('user', null, lastFinal);
-              if (autoLLM.checked) runPipeline(lastFinal);
+            if (!m || typeof m !== 'object') return;
+
+            if (m.type && (m.type === 'partial' || m.type === 'stable' || m.type === 'final')) {
+              const lang = m.lang || 'auto';
+              const tag  = m.type.toUpperCase();
+              if (sttMetaEl) sttMetaEl.textContent = `STT: ${tag} [${lang}]`;
             }
-            if (m.type === 'reset_ok') setStatus('reset ok');
-            if (m.type === 'stopped')  setStatus('stopped (ws open)');
-            if (m.type === 'started')  setStatus('started');
-            if (m.error) setStatus('server: ' + m.error);
-          } catch { textEl.textContent = String(ev.data || ''); }
+
+            // อัปเดต transcript live
+            if (m.type === 'partial' || m.type === 'stable' || m.type === 'final') {
+              if (m.text != null) textEl.textContent = m.text;
+            }
+
+            // final → ต่อเข้า buffer ให้กลายเป็น context ยาว
+            if (m.type === 'final') {
+              const utt = (m.text || '').trim();
+              if (utt) {
+                ctxText = (ctxText + ' ' + utt).trim();
+                console.log('[CTX]', ctxText);
+              }
+            }
+
+            if (m.type === 'info' && m.msg) {
+              console.log('[stt-info]', m.msg);
+            }
+            if (m.type === 'error' && m.msg) {
+              console.warn('[stt-error]', m.msg);
+              setStatus('server: ' + m.msg);
+            }
+          } catch (e) {
+            console.error('ws parse error', e, ev.data);
+            textEl.textContent = String(ev.data || '');
+          }
         };
+        // ========= /ws.onmessage =========
+
       } catch (e) { reject(e); }
     });
   }
@@ -186,6 +277,7 @@
     rec.onstart = () => setStatus('recording…');
     rec.start(250);
   }
+
   async function stopOnly(){
     if (rec && rec.state !== 'inactive') rec.stop();
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
@@ -198,10 +290,11 @@
     if (ws && ws.readyState === 1 && closeWS) { ws.send('CLOSE'); ws.close(); }
   }
 
-  // ========== Pipeline: /agent/answer (refine → search? → llm) ==========
-  async function runPipeline(text){
+  // ========== LLM Pipeline ==========
+  async function runPipeline(text, langHint){
     const api = apiInput.value.trim().replace(/\/+$/,'');
-    const mode = getMode(); // "never" (เร็ว) หรือ "always" (ค้นเว็บ)
+    const mode = getMode(); // "never" หรือ "always"
+
     const pendingAgent = addMsg('agent', 'กำลังกำจัด noise/ทำความเข้าใจ…', '', true);
     const pendingAsst  = addMsg('asst', 'กำลังคิด…', '', true);
 
@@ -212,9 +305,9 @@
         body: JSON.stringify({
           text,
           session_id: SID,
-          lang_hint: "th",
+          lang_hint: langHint || "th",
           topk: 3,
-          search_when: mode   // << โหมดที่คุณเลือก
+          search_when: mode
         })
       });
       if (!r.ok) {
@@ -224,7 +317,6 @@
       }
       const j = await r.json();
 
-      // แสดงผล refine จากเซิร์ฟเวอร์ (ชัด ๆ)
       if (j && j.refine) {
         const ref = j.refine;
         const lines = [
@@ -237,7 +329,6 @@
         setPendingDone(pendingAgent, "ไม่มีข้อมูล refine");
       }
 
-      // คำตอบ + แหล่งอ้างอิงถ้ามี
       let txt = j.answer || "(empty response)";
       if (Array.isArray(j.sources) && j.sources.length > 0) {
         const links = j.sources.map(s => `• ${s.title} — ${s.url}`).join('\n');
@@ -245,6 +336,9 @@
       }
       setPendingDone(pendingAsst, txt);
 
+      if (autoTTS.checked) {
+        setTimeout(() => speakText(txt), 100);
+      }
     } catch (e) {
       const msg = "Agent error: " + (e?.message || e);
       setPendingDone(pendingAgent, msg);
@@ -252,11 +346,14 @@
     }
   }
 
-  // Buttons
+  // ----- Buttons -----
   btnStart.onclick = async () => {
     try {
       await stopAll(true);
       clearText();
+      sttMetaEl.textContent = '';
+      lastLLMText = "";
+      ctxText = "";  // เริ่ม buffer ใหม่ทุกครั้งที่ Start
       await openWS();
       await startRecording();
       if (!greeted) {
@@ -275,24 +372,33 @@
   btnReset.onclick = async () => {
     await stopAll(true);
     clearText();
+    sttMetaEl.textContent = '';
     setStatus('idle');
     greeted = false;
-    // ล้าง session memory ในเซิร์ฟเวอร์ (ยังคงใช้ SID เดิมได้)
-    try {
-      const api = apiInput.value.trim().replace(/\/+$/,'');
-      await fetch(api + "/agent/memory/clear", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ session_id: SID })
-      });
-    } catch {}
+    lastLLMText = "";
+    ctxText = "";  // reset context ด้วย
   };
   btnClear.onclick = () => { chat.innerHTML = ''; };
-  btnAsk.onclick   = () => {
-    const p = lastFinal || textEl.textContent || '';
+
+  // ปุ่ม Ask LLM = manual + ส่ง context ยาวจากหลาย final
+  btnAsk.onclick = () => {
+    // ใช้ ctxText ทั้งก้อนก่อน ถ้าไม่มีค่อย fallback live text
+    const p = (ctxText || textEl.textContent || '').trim();
     if (!p) return;
+
     addMsg('user', null, p);
-    runPipeline(p);
+    sendToLLM(p, 'th');
+
+    // ปิด chapter นี้ แล้วเริ่มสะสม context ใหม่รอบถัดไป
+    ctxText = "";
+  };
+
+  btnSpeak.onclick = () => {
+    const lastAsst = [...chat.querySelectorAll('.msg.asst .text')].pop();
+    const asstText = lastAsst?.textContent?.trim();
+    if (asstText) return speakText(asstText);
+    const fromLive = textEl?.textContent || '';
+    return speakText(fromLive);
   };
 })();
 </script>

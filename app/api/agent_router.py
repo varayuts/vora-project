@@ -17,11 +17,24 @@ def refine(req: RefineRequest):
 def agent_answer(req: AnswerRequest):
     try:
         sid = req.session_id or ""
-        if sid:
-            MEMORY.add(sid, "user", req.text)   # เก็บฝั่งผู้ใช้ก่อน
+
+        # 1) refine ครั้งเดียว
         ref = agent_core.refine(req.text, req.lang_hint or "th")
-        ans, sources = agent_core.answer(ref, search_when=req.search_when, topk=req.topk, session_id=sid)
+
+        # 2) ใช้ clean_text เก็บลง memory แทนข้อความดิบ
+        clean = getattr(ref, "clean_text", None) or req.text
+        if sid:
+            MEMORY.add(sid, "user", clean)
+
+        # 3) ส่ง refine_res เข้า core.answer โดยตรง
+        ans, sources = agent_core.answer(
+            ref,
+            search_when=req.search_when,
+            topk=req.topk,
+            session_id=sid,
+        )
         return AnswerResponse(answer=ans, refine=ref, sources=sources)
+
     except Exception as e:
         raise HTTPException(500, f"Agent error: {e}")
 

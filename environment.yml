@@ -15,6 +15,8 @@ dependencies:
   - fastapi
   - websockets
   - pydub
+  - lxml
+  - beautifulsoup4
   - pytorch
   - torchvision
   - torchaudio
@@ -25,3 +27,9 @@ dependencies:
       - faster-whisper
       - piper-tts
       - python-multipart
+      - httpx==0.27.2
+      - trafilatura
+      - readability-lxml
+      - tldextract
+      - rapidfuzz
+
