@@ -1,0 +1,185 @@
+================================================================================
+                    VORA PROJECT PROGRESS - 26 มกราคม 2026
+================================================================================
+
+📍 สถานที่: ห้องแล็บ IT มหาวิทยาลัย (ผ่าน Tailscale + Cloudflare Tunnel)
+
+================================================================================
+                           ✅ สิ่งที่ทำวันนี้ (26 ม.ค. 2026)
+================================================================================
+
+1. 🎤 STT (Speech-to-Text) - ทำงานได้
+   - ใช้ Whisper (distill-whisper-th-large-v3-ct2)
+   - รองรับภาษาไทย 100%
+   - ทำงานบน Mobile และ PC
+
+2. 🤖 LLM Pipeline - ทำงานได้
+   - สร้างไฟล์: app/core/vora_pipeline.py
+   - สร้างไฟล์: app/api/pipeline_router.py
+   - Agent Model: gemma3:12b-it-qat (วิเคราะห์คำสั่ง)
+   - Reasoning Model: gemma3:27b-it-qat (คิดวางแผน)
+   - Endpoints: /pipeline/command, /pipeline/quick, /pipeline/status
+
+3. 🔊 TTS (Text-to-Speech) - ทำงานได้
+   - สร้างไฟล์: app/services/thai_tts.py
+   - ติดตั้ง gTTS (Google TTS) เป็น primary backend
+   - เสียงผู้หญิงภาษาไทย
+   - Backends ที่รองรับ: Piper, Typhoon2, gTTS
+   - ปัจจุบันใช้ gTTS (Piper ไม่มี Thai model, Typhoon2 ไม่ได้รัน)
+
+4. 📋 Command Queue System - พร้อมใช้งาน
+   - สร้างไฟล์: app/core/command_queue.py
+   - Priority Queue สำหรับคำสั่งหุ่นยนต์
+   - รองรับ Emergency Stop
+   - รองรับ Retry และ Timeout
+
+5. 📊 State Management - พร้อมใช้งาน
+   - สร้างไฟล์: app/core/state_manager.py
+   - ติดตามสถานะหุ่นยนต์ (idle, moving, executing, error)
+   - ติดตามสถานะ session และ system mode
+
+6. 👤 Session Management - พร้อมใช้งาน
+   - สร้างไฟล์: app/core/session_manager.py
+   - จัดการ conversation history
+   - จัดการ user preferences
+
+7. 🌐 Server API - พร้อมใช้งาน
+   - สร้างไฟล์: app/api/server_router.py
+   - Endpoints: /api/server/tts/speak, /api/server/queue/add
+   - Emergency Stop, Status monitoring
+
+8. 📱 Mobile Access - ทำงานได้
+   - สร้าง start_http.sh (HTTP mode ไม่มี SSL)
+   - ใช้ Cloudflare Tunnel สำหรับ HTTPS บนมือถือ
+   - Frontend: https://pray-reaching-putting-how.trycloudflare.com
+   - API: https://requests-populations-nurses-broadband.trycloudflare.com
+
+9. 🖥️ Frontend UI - อัพเดท
+   - แก้ไข: app/frontend/index.html
+   - เพิ่ม Mode Selector ใน header (สำหรับ mobile)
+   - เพิ่ม TTS toggle และ speed controls
+   - เพิ่มปุ่ม Emergency Stop
+   - Sync Mode ระหว่าง header และ sidebar
+
+================================================================================
+                        📁 ไฟล์ใหม่ที่สร้างวันนี้
+================================================================================
+
+app/core/
+├── vora_pipeline.py      # LLM Pipeline (Agent + Reasoning)
+├── command_queue.py      # Priority Queue สำหรับคำสั่ง
+├── state_manager.py      # State Management
+└── session_manager.py    # Session Management
+
+app/api/
+├── pipeline_router.py    # API endpoints สำหรับ pipeline
+└── server_router.py      # API endpoints สำหรับ TTS, Queue, State
+
+app/services/
+└── thai_tts.py           # Thai TTS Service
+
+app/frontend/
+├── index.html            # Updated UI
+└── https_server.py       # HTTPS server (ไม่ได้ใช้เพราะมี cert issues)
+
+scripts/
+├── start_http.sh         # HTTP mode startup
+└── start_all.sh          # Full startup script
+
+================================================================================
+                    ⏳ สิ่งที่ควรทำพรุ่งนี้ (27 ม.ค. 2026)
+================================================================================
+
+🔴 Priority สูง:
+-----------------
+1. Gateway สำหรับ MyAGV
+   - สร้าง client บน Jetson Nano
+   - รับคำสั่งจาก server ผ่าน WebSocket หรือ HTTP
+   - ส่ง feedback กลับมา (สถานะ, ตำแหน่ง)
+
+2. ทดสอบ Full Pipeline บนมือถือ
+   - STT → LLM → TTS → Robot Command
+   - ตรวจสอบ latency และ performance
+
+🟡 Priority กลาง:
+-----------------
+3. VLM + Camera Integration
+   - เชื่อมต่อ Streamplify 1080p
+   - ใช้ gemma3n:e4b สำหรับ object detection
+   - คำสั่ง: "มองหาไขควง", "อะไรอยู่บนโต๊ะ"
+
+4. Map & Navigation
+   - กำหนดพิกัดห้องแล็บ
+   - Path planning สำหรับ MyAGV
+   - Known locations: โต๊ะทำงาน, ตู้เก็บของ, ประตู
+
+🟢 Priority ต่ำ:
+-----------------
+5. ปรับปรุง LLM Prompt
+   - เพิ่ม context สำหรับงาน IT Lab
+   - ปรับ response format
+
+6. Startup Script ครบวงจร
+   - Auto-start ทุก service ด้วยคำสั่งเดียว
+   - Health check และ auto-restart
+
+7. Error Handling
+   - Fallback เมื่อ LLM ไม่ตอบ
+   - Retry logic สำหรับ TTS
+   - Connection recovery
+
+================================================================================
+                          🛠️ Server Configuration
+================================================================================
+
+Ports:
+------
+- API Server: 8080 (HTTP)
+- Frontend: 9000 (HTTP)
+- Ollama: 11434
+
+Models:
+-------
+- Agent: gemma3:12b-it-qat
+- Reasoning: gemma3:27b-it-qat
+- VLM: gemma3n:e4b (ยังไม่ได้ใช้)
+
+Hardware:
+---------
+- Server PC ที่มหาวิทยาลัย
+- MyAGV 2023 + Jetson Nano (ยังไม่ได้เชื่อมต่อ)
+- Streamplify 1080p Camera (ยังไม่ได้เชื่อมต่อ)
+- LiDAR (ยังไม่ได้เชื่อมต่อ)
+
+================================================================================
+                            📝 Notes
+================================================================================
+
+- ใช้ HTTP mode แทน HTTPS เพราะ self-signed cert มีปัญหา
+- Cloudflare Tunnel URLs เปลี่ยนทุกครั้งที่รัน (ต้อง run ใหม่พรุ่งนี้)
+- gTTS ต้องการ internet connection
+- ภาษาไทยเท่านั้น (Thai only project)
+
+================================================================================
+                        🚀 วิธีเริ่มต้นพรุ่งนี้
+================================================================================
+
+1. เปิด terminal ที่ server:
+   cd /home/user/vora_project/VORA/VORA
+   source vora_env/bin/activate
+
+2. Start API server:
+   uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload &
+
+3. Start Frontend:
+   cd app/frontend && python -m http.server 9000 &
+
+4. Start Cloudflare Tunnels (สำหรับ mobile):
+   cloudflared tunnel --url http://localhost:9000 &  # Frontend
+   cloudflared tunnel --url http://localhost:8080 &  # API
+
+5. อัพเดท API_BASE ใน index.html ด้วย URL ใหม่จาก cloudflared
+
+================================================================================
+                              END OF REPORT
+================================================================================

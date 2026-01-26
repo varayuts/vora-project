@@ -4,3 +4,8 @@ models/
 .env
 venv/
 .DS_Store
+vora_env/
+__pycache__/
+*.pyc
+cert.pem
+key.pem

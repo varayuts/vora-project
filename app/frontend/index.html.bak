@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="th">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VORA Robot Dashboard 🤖</title>
+    <style>
+        :root {
+            --bg: #0d1117; --fg: #c9d1d9; --accent: #58a6ff;
+            --card: #161b22; --border: #30363d; --user-msg: #1f2937;
+            --vora-msg: #21262d; --agent-bg: #111522;
+        }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        header { padding: 15px 25px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+        .status-pill { padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; background: #238636; color: white; display: flex; align-items: center; gap: 8px; }
+        .status-pill.offline { background: #da3633; }
+        @media (max-width: 768px) { 
+            #main-container { grid-template-columns: 1fr; }
+            .sidebar { display: none; }
+        }
+        
+        #main-container { display: grid; grid-template-columns: 350px 1fr; gap: 20px; padding: 20px; flex: 1; overflow: hidden; }
+        .sidebar { background: var(--card); border-radius: 12px; border: 1px solid var(--border); padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+        #live-transcript { flex: 1; font-style: italic; color: #8b949e; overflow-y: auto; white-space: pre-wrap; padding: 15px; background: #0d1117; border-radius: 10px; border: 1px solid var(--border); font-size: 14px; }
+        
+        .chat-area { display: flex; flex-direction: column; background: var(--card); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+        #chat-history { flex: 1; overflow-y: auto; padding: 25px; display: flex; flex-direction: column; gap: 20px; scroll-behavior: smooth; }
+        .msg { max-width: 85%; padding: 16px 20px; border-radius: 18px; line-height: 1.6; animation: slideUp 0.3s ease-out; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .user { align-self: flex-end; background: var(--user-msg); border-bottom-right-radius: 2px; }
+        .vora { align-self: flex-start; background: var(--vora-msg); border: 1px solid var(--border); border-bottom-left-radius: 2px; }
+        .thinking { align-self: center; background: var(--agent-bg); border: 1px dashed var(--accent); width: 92%; font-size: 13px; border-radius: 12px; color: var(--accent); padding: 15px; }
+
+        .controls { padding: 20px 25px; background: var(--card); border-top: 1px solid var(--border); display: flex; gap: 15px; }
+        button { padding: 12px 24px; border-radius: 10px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; font-size: 14px; }
+        #btn-ask { background: var(--accent); color: white; flex: 1; }
+        #btn-restart { background: #30363d; color: white; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div style="display: flex; align-items: center; gap: 15px;">
+        <h2 style="margin: 0; color: var(--accent);">🤖 VORA Dashboard</h2>
+        <span style="font-size: 12px; color: #8b949e; background: #21262d; padding: 4px 10px; border-radius: 6px;" id="server-info">Connecting...</span>
+    </div>
+    <div style="display: flex; gap: 10px;">
+        <div id="mic-status" style="padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; background: #30363d; color: #8b949e;">🎤 Mic OFF</div>
+        <div id="conn-status" class="status-pill offline">🔴 DISCONNECTED</div>
+    </div>
+</header>
+
+<div id="main-container">
+    <div class="sidebar">
+        <h3 style="margin:0">👂 Hearing (Live)</h3>
+        <div id="live-transcript">Waiting for audio...</div>
+        <div style="font-size: 12px; color: #8b949e;">*Fixed to ReSpeaker 16kHz</div>
+    </div>
+
+    <div class="chat-area">
+        <div id="chat-history">
+            <div class="msg vora">ยินดีต้อนรับครับ! ผม VORA พร้อมให้บริการแล้ว 🚀</div>
+        </div>
+        <div class="controls">
+            <button id="btn-mic" style="background: #238636; flex: 1;">🎤 Start Listening</button>
+            <button id="btn-ask">🧠 ASK LLM</button>
+            <button id="btn-restart" onclick="location.reload()">🔄 Restart</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Connection URLs
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname === 'localhost' ? 'localhost' : window.location.hostname;
+    const SERVER_WS_URL = `${protocol}//localhost:8000/ws/stt`;
+    const GATEWAY_WS_URL = `${protocol}//localhost:9001/gw/dashboard`;
+    
+    let wsServer;        // Connection to STT server
+    let wsGateway;       // Connection to Gateway (myAGV)
+    let audioContext;
+    let mediaStream;
+    let processor;
+    let isRecording = false;
+    let currentPartial = "";
+    
+    const historyDiv = document.getElementById('chat-history');
+    const liveDiv = document.getElementById('live-transcript');
+    const statusDiv = document.getElementById('conn-status');
+    const micStatusDiv = document.getElementById('mic-status');
+    const serverInfoDiv = document.getElementById('server-info');
+    const btnMic = document.getElementById('btn-mic');
+    const btnAsk = document.getElementById('btn-ask');
+
+    // Show connection info
+    serverInfoDiv.innerText = `📡 Server + Gateway`;
+
+    // Connect to STT Server
+    function connectServer() {
+        wsServer = new WebSocket(SERVER_WS_URL);
+        wsServer.binaryType = 'arraybuffer';
+        
+        wsServer.onopen = () => {
+            console.log('✅ Connected to STT server');
+            wsServer.send(JSON.stringify({
+                type: "start_session",
+                session_id: `web-${Date.now()}`,
+                language: "th"
+            }));
+        };
+        
+        wsServer.onmessage = (e) => {
+            try {
+                if (e.data instanceof ArrayBuffer) return;
+                const data = JSON.parse(e.data);
+                console.log('📥 STT Response:', data);
+                
+                if (data.type === 'transcript' && data.text) {
+                    currentPartial = data.text;
+                    addMsg('user', `🎤 ${data.text}`);
+                    liveDiv.innerText = `✅ Transcribed: ${data.text}`;
+                } else if (data.type === 'partial' && data.text) {
+                    currentPartial = data.text;
+                    liveDiv.innerText = `🎤 Server: ${data.text}`;
+                }
+            } catch (err) { 
+                console.error('Error parsing STT message:', err);
+            }
+        };
+        
+        wsServer.onerror = (e) => {
+            console.error('❌ Server error:', e);
+        };
+        
+        wsServer.onclose = () => {
+            console.log('🔌 Server disconnected');
+            setTimeout(connectServer, 3000);
+        };
+    }
+
+    // Connect to Gateway (myAGV audio)
+    function connectGateway() {
+        wsGateway = new WebSocket(GATEWAY_WS_URL);
+        
+        wsGateway.onopen = () => {
+            console.log('✅ Connected to Gateway (myAGV)');
+            addMsg('vora', '📡 Gateway Connected - Listening to myAGV...', true);
+        };
+        
+        wsGateway.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('📡 Gateway Response:', data);
+                
+                if (data.type === 'partial') {
+                    currentPartial = data.text;
+                    liveDiv.innerText = `🤖 myAGV: ${data.text}`;
+                } else if (data.type === 'final') {
+                    addMsg('user', `🤖 myAGV: ${data.text}`);
+                    liveDiv.innerText = `✅ myAGV: ${data.text}`;
+                    currentPartial = "";
+                } else if (data.type === 'agent_response') {
+                    if (data.refine) {
+                        const refineHtml = `🎯 <b>Cleaned:</b> ${data.refine.clean_text}`;
+                        addMsg('vora', refineHtml, true);
+                    }
+                    if (data.answer) addMsg('vora', `🤖 ${data.answer}`);
+                } else if (data.type === 'robot_status') {
+                    addMsg('vora', `🦾 ${data.msg}`);
+                }
+            } catch (err) { 
+                console.error('Error parsing Gateway message:', err);
+            }
+        };
+        
+        wsGateway.onerror = (e) => {
+            console.error('❌ Gateway error:', e);
+        };
+        
+        wsGateway.onclose = () => {
+            console.log('🔌 Gateway disconnected (port 9001 unavailable)');
+            setTimeout(connectGateway, 5000);  // Retry every 5s, not every 3s
+        };
+    }
+
+    function updateConnectionStatus() {
+        const serverOk = wsServer && wsServer.readyState === WebSocket.OPEN;
+        const gatewayOk = wsGateway && wsGateway.readyState === WebSocket.OPEN;
+        
+        if (serverOk && gatewayOk) {
+            statusDiv.innerHTML = "🟢 ONLINE (Both)";
+            statusDiv.classList.remove('offline');
+        } else if (serverOk) {
+            statusDiv.innerHTML = "🟡 SERVER ONLY";
+            statusDiv.classList.remove('offline');
+        } else if (gatewayOk) {
+            statusDiv.innerHTML = "🟡 GATEWAY ONLY";
+            statusDiv.classList.remove('offline');
+        } else {
+            statusDiv.innerHTML = "🔴 OFFLINE";
+            statusDiv.classList.add('offline');
+        }
+    }
+
+    function connect() {
+        console.log('🔌 Connecting to STT Server and Gateway...');
+        connectServer();
+        connectGateway();
+        setInterval(updateConnectionStatus, 1000);
+    }
+
+    // Request microphone access
+    async function startMicrophone() {
+        try {
+            mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: { 
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 16000
+                } 
+            });
+            
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(mediaStream);
+            processor = audioContext.createScriptProcessor(4096, 1, 1);
+            
+            processor.onaudioprocess = (e) => {
+                if (!isRecording || !wsServer || wsServer.readyState !== WebSocket.OPEN) return;
+                
+                const inputData = e.inputBuffer.getChannelData(0);
+                const pcm16 = new Int16Array(inputData.length);
+                
+                for (let i = 0; i < inputData.length; i++) {
+                    pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7fff;
+                }
+                
+                wsServer.send(pcm16.buffer);
+            };
+            
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+            isRecording = true;
+            micStatusDiv.innerHTML = "🎤 Mic ON";
+            micStatusDiv.style.background = "#238636";
+            btnMic.innerHTML = "⏹️ Stop Listening";
+            liveDiv.innerText = "🎤 Listening...";
+            
+        } catch (err) {
+            alert('❌ Microphone access denied: ' + err.message);
+            console.error('Mic error:', err);
+        }
+    }
+
+    function stopMicrophone() {
+        if (processor) processor.disconnect();
+        if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+        if (audioContext) audioContext.close();
+        
+        isRecording = false;
+        micStatusDiv.innerHTML = "🎤 Mic OFF";
+        micStatusDiv.style.background = "#30363d";
+        btnMic.innerHTML = "🎤 Start Listening";
+        
+        if (currentPartial) {
+            liveDiv.innerText = `✅ Heard: ${currentPartial}`;
+        } else {
+            liveDiv.innerText = "Waiting for input...";
+        }
+    }
+
+    btnMic.onclick = () => {
+        if (isRecording) {
+            stopMicrophone();
+        } else {
+            startMicrophone();
+        }
+    };
+
+    btnAsk.onclick = () => {
+        if (currentPartial && wsServer && wsServer.readyState === WebSocket.OPEN) {
+            addMsg('vora', "⚡ Processing: " + currentPartial, true);
+        }
+    };
+
+    function addMsg(role, text, isThinking = false) {
+        if (!text) return;
+        const msgDiv = document.createElement('div');
+        if (isThinking) {
+            msgDiv.className = 'thinking';
+            msgDiv.innerHTML = `<small>🧠 PROCESSING</small><br>${text}`;
+        } else {
+            msgDiv.className = `msg ${role}`;
+            msgDiv.innerHTML = `<b>${role === 'user' ? '👤 You' : '🤖 VORA'}:</b><br>${text}`;
+        }
+        historyDiv.appendChild(msgDiv);
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+    }
+
+    connect();
+</script>
+</body>
+</html>

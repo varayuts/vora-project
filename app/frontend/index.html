@@ -1,0 +1,1300 @@
+<!doctype html>
+<html lang="th">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VORA Voice Assistant 🤖</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg-dark: #0d1117;
+            --bg-card: #161b22;
+            --border: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --success: #238636;
+            --danger: #da3633;
+            --warn: #d29922;
+            --msg-user: #1f2937;
+            --msg-vora: #21262d;
+            --msg-agent: #111522;
+        }
+        
+        html, body { height: 100%; }
+        body { 
+            font-family: 'Segoe UI', -apple-system, sans-serif; 
+            background: var(--bg-dark); 
+            color: var(--text-primary); 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden;
+        }
+        
+        /* Header */
+        header { 
+            padding: 16px 24px; 
+            background: var(--bg-card); 
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        
+        .header-left { display: flex; align-items: center; gap: 16px; }
+        .header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        
+        h1 { margin: 0; font-size: 20px; color: var(--accent); }
+        .server-badge { font-size: 11px; color: var(--text-secondary); background: rgba(88,166,255,0.1); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); }
+        
+        /* Status Pills */
+        .status-pill {
+            padding: 8px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .status-pill.online { background: rgba(35,134,54,0.2); color: #3fb950; border-color: #3fb950; }
+        .status-pill.offline { background: rgba(218,54,51,0.2); color: var(--danger); border-color: var(--danger); }
+        .status-pill.partial { background: rgba(210,153,34,0.2); color: var(--warn); border-color: var(--warn); }
+        
+        /* Main Container */
+        #main-container {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+            padding: 20px;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        
+        .sidebar h3 { margin: 0; font-size: 14px; color: var(--accent); font-weight: 600; }
+        
+        /* Microphone Selector */
+        .mic-selector {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .mic-label { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+        
+        .mic-control {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        select {
+            flex: 1;
+            padding: 8px 12px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        select:hover { border-color: var(--accent); }
+        select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88,166,255,0.1); }
+        
+        button.small {
+            padding: 8px 12px;
+            background: rgba(88,166,255,0.2);
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        
+        button.small:hover { background: rgba(88,166,255,0.3); }
+        
+        /* Live Transcript */
+        #live-transcript {
+            flex: 1;
+            background: linear-gradient(135deg, rgba(13,17,23,0.8), rgba(22,27,34,0.5));
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+        
+        #live-transcript::-webkit-scrollbar { width: 6px; }
+        #live-transcript::-webkit-scrollbar-track { background: var(--bg-dark); }
+        #live-transcript::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        #live-transcript::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+        
+        /* Chat Area */
+        .chat-area {
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        
+        #chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            scroll-behavior: smooth;
+        }
+        
+        #chat-history::-webkit-scrollbar { width: 8px; }
+        #chat-history::-webkit-scrollbar-track { background: var(--bg-card); }
+        #chat-history::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        #chat-history::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+        
+        .msg {
+            max-width: 85%;
+            padding: 14px 18px;
+            border-radius: 12px;
+            line-height: 1.5;
+            font-size: 14px;
+            animation: slideUp 0.3s ease-out;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .msg.user {
+            align-self: flex-end;
+            background: linear-gradient(135deg, #1f2937 0%, #374151 100%);
+            border: 1px solid rgba(88,166,255,0.2);
+            border-bottom-right-radius: 2px;
+        }
+        
+        .msg.vora {
+            align-self: flex-start;
+            background: linear-gradient(135deg, #21262d 0%, #2d3139 100%);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 2px;
+        }
+        
+        .msg.thinking {
+            align-self: center;
+            background: var(--msg-agent);
+            border: 1px dashed var(--accent);
+            width: 90%;
+            font-size: 12px;
+            color: var(--accent);
+            padding: 12px 16px;
+        }
+        
+        /* Controls */
+        .controls {
+            padding: 20px 24px;
+            background: linear-gradient(180deg, var(--bg-card) 0%, rgba(22,27,34,0.8) 100%);
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        
+        button.main {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-height: 42px;
+        }
+        
+        button.main:active { transform: scale(0.98); }
+        button.main:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        #btn-mic {
+            background: linear-gradient(135deg, var(--success), #2ea043);
+            color: white;
+            flex: 1.5;
+        }
+        
+        #btn-mic:hover { background: linear-gradient(135deg, #2ea043, #239c3b); }
+        #btn-mic.listening { background: linear-gradient(135deg, var(--danger), #d1240f); animation: pulse 1s infinite; }
+        
+        @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(218,54,51,0.4); } 50% { box-shadow: 0 0 0 8px rgba(218,54,51,0); } }
+        
+        #btn-ask {
+            background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+            color: white;
+            flex: 1;
+        }
+        
+        #btn-ask:hover { background: linear-gradient(135deg, var(--accent-hover), #6bb6ff); }
+        #btn-ask:disabled { background: rgba(88,166,255,0.3); cursor: not-allowed; }
+        
+        #btn-clear {
+            background: rgba(210,153,34,0.2);
+            border: 1px solid var(--warn);
+            color: var(--warn);
+            flex: 0.5;
+        }
+        
+        #btn-clear:hover { background: rgba(210,153,34,0.3); }
+        
+        #btn-restart {
+            background: rgba(88,166,255,0.1);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            flex: 0.5;
+        }
+        
+        #btn-restart:hover { background: rgba(88,166,255,0.2); }
+        
+        /* Responsive */
+        @media (max-width: 1024px) {
+            #main-container { grid-template-columns: 1fr; }
+            .sidebar { min-height: 200px; }
+        }
+        
+        @media (max-width: 768px) {
+            header { padding: 12px 16px; }
+            header h1 { font-size: 16px; }
+            .header-left { flex-direction: column; align-items: flex-start; gap: 8px; }
+            .header-right { width: 100%; justify-content: space-between; margin-top: 8px; }
+            #main-container { 
+                grid-template-columns: 1fr; 
+                gap: 0; 
+                padding: 0; 
+                height: calc(100vh - 120px);
+            }
+            .sidebar { 
+                display: none; /* ซ่อนบน mobile - ใช้ bottom sheet แทน */
+            }
+            .sidebar.mobile-open {
+                display: flex !important;
+                position: fixed !important;
+                bottom: 0 !important;
+                left: 0 !important;
+                right: 0 !important;
+                top: auto !important;
+                max-height: 70vh;
+                border-radius: 20px 20px 0 0;
+                z-index: 1001;
+                animation: slideUp 0.3s ease-out;
+                overflow-y: auto;
+                background: var(--bg-card);
+            }
+            @keyframes slideUp {
+                from { transform: translateY(100%); }
+                to { transform: translateY(0); }
+            }
+            .chat-area { 
+                border-radius: 0; 
+                border: none;
+                height: 100%;
+            }
+            #chat-history { padding: 16px; }
+            .msg { max-width: 95%; font-size: 15px; padding: 12px 14px; }
+            .controls { 
+                padding: 12px 16px; 
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+            button.main { 
+                padding: 14px 16px; 
+                font-size: 14px; 
+                min-height: 48px; /* Touch-friendly */
+            }
+            #btn-mic { flex: 2; }
+            #btn-ask { flex: 1; }
+            #btn-clear, #btn-restart { flex: 0.5; min-width: 48px; }
+            .status-pill { padding: 6px 10px; font-size: 11px; }
+        }
+        
+        /* Quick Commands */
+        .quick-commands {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 12px 16px;
+            background: var(--bg-card);
+            border-top: 1px solid var(--border);
+            overflow-x: auto;
+        }
+        
+        .quick-cmd {
+            padding: 10px 16px;
+            background: rgba(88,166,255,0.1);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+        
+        .quick-cmd:hover, .quick-cmd:active {
+            background: rgba(88,166,255,0.25);
+            border-color: var(--accent);
+        }
+        
+        /* Settings toggle button for mobile */
+        #btn-settings-toggle {
+            display: none;
+            position: fixed;
+            bottom: 100px;
+            right: 16px;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 999;
+        }
+        
+        @media (max-width: 768px) {
+            #btn-settings-toggle { display: flex; align-items: center; justify-content: center; }
+        }
+        
+        /* Overlay */
+        .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 998;
+        }
+        
+        .overlay.active { display: block; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="header-left">
+        <h1>🤖 VORA Voice Assistant</h1>
+        <span class="server-badge" id="server-info">Connecting...</span>
+    </div>
+    <div class="header-right">
+        <!-- Mode Selector - ย้ายมาที่ header สำหรับ mobile -->
+        <select id="mode-select-header" style="padding: 6px 10px; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; font-size: 12px;">
+            <option value="transcript-only">📝 Transcript</option>
+            <option value="auto-llm">🤖 Auto LLM</option>
+            <option value="manual-llm">🖐️ Manual</option>
+        </select>
+        <div id="mic-status" class="status-pill offline">🎤 Mic OFF</div>
+        <div id="conn-status" class="status-pill offline">🔴 Not Connected</div>
+    </div>
+</header>
+
+<div id="main-container">
+    <!-- Sidebar: Microphone & Status -->
+    <div class="sidebar">
+        <div>
+            <h3>🎤 Microphone Settings</h3>
+        </div>
+        
+        <div class="mic-selector">
+            <label class="mic-label">Select Input Device:</label>
+            <div class="mic-control">
+                <select id="mic-select">
+                    <option value="">🔄 Scanning...</option>
+                </select>
+                <button class="small" id="btn-refresh-mics">🔄 Refresh</button>
+            </div>
+            
+            <label class="mic-label" style="margin-top: 8px;">Sample Rate:</label>
+            <div class="mic-control">
+                <span id="sample-rate-display" style="color: var(--accent); font-weight: 600;">🔄 Auto-detecting...</span>
+            </div>
+            
+            <button class="small" id="btn-allow-mic" style="background: rgba(35,214,54,0.2); border: 1px solid #3fb950; color: #3fb950; width: 100%; display: none; margin-top: 8px;">✅ Allow Microphone</button>
+        </div>
+        
+        <!-- 🤖 VORA Settings -->
+        <div style="margin-top: 12px;">
+            <h3>🤖 VORA Settings</h3>
+        </div>
+        
+        <div class="mic-selector">
+            <label class="mic-label">Silence Timeout (ms):</label>
+            <div class="mic-control">
+                <select id="silence-timeout-select">
+                    <option value="800">800ms (เร็ว)</option>
+                    <option value="1200">1200ms (ปกติ)</option>
+                    <option value="1500" selected>1500ms (รอนาน)</option>
+                    <option value="2000">2000ms (ช้า)</option>
+                    <option value="3000">3000ms (ประโยคยาว)</option>
+                </select>
+            </div>
+            
+            <label class="mic-label" style="margin-top: 8px;">Min Speech Length:</label>
+            <div class="mic-control">
+                <select id="min-speech-select">
+                    <option value="0.8">0.8s (สั้นมาก)</option>
+                    <option value="1.2">1.2s (ปกติ)</option>
+                    <option value="1.5" selected>1.5s (รอนาน)</option>
+                    <option value="2.5">2.5s (ประโยคยาว)</option>
+                </select>
+            </div>
+            
+            <label class="mic-label" style="margin-top: 8px;">Mode:</label>
+            <div class="mic-control">
+                <select id="process-mode-select">
+                    <option value="transcript-only" selected>📝 Transcript Only</option>
+                    <option value="auto-llm">🤖 Auto → LLM</option>
+                    <option value="manual-llm">🖐️ Manual → LLM</option>
+                </select>
+            </div>
+            
+            <label class="mic-label" style="margin-top: 8px;">🔊 TTS Response:</label>
+            <div class="mic-control">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="tts-enabled" checked style="width: 18px; height: 18px;">
+                    <span style="font-size: 13px;">เปิดเสียงตอบกลับ</span>
+                </label>
+            </div>
+            
+            <label class="mic-label" style="margin-top: 8px;">🔊 TTS Speed:</label>
+            <div class="mic-control">
+                <select id="tts-speed-select">
+                    <option value="0.8">0.8x (ช้า)</option>
+                    <option value="1.0" selected>1.0x (ปกติ)</option>
+                    <option value="1.2">1.2x (เร็ว)</option>
+                    <option value="1.5">1.5x (เร็วมาก)</option>
+                </select>
+            </div>
+        </div>
+        
+        <div style="padding: 12px; background: rgba(88,166,255,0.05); border-radius: 8px; border: 1px solid var(--border);">
+            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;">Active Microphone:</div>
+            <div style="font-size: 13px; color: var(--accent); font-weight: 600;" id="active-mic">None</div>
+        </div>
+        
+        <h3 style="margin-top: 12px;">👂 Live Transcript</h3>
+        <div id="live-transcript">Waiting for input...</div>
+    </div>
+    
+    <!-- Main Chat Area -->
+    <div class="chat-area">
+        <div id="chat-history">
+            <div class="msg vora">ยินดีต้อนรับครับ! 👋<br>ผม <b>VORA</b> - Voice Oriented Robotics Assistant 🚀<br><br>
+            <b>📱 วิธีใช้:</b><br>
+            1. กด 🎤 <b>Start</b> แล้วพูด<br>
+            2. หรือกดปุ่ม Quick Command ด้านล่าง<br><br>
+            <b>🔧 อุปกรณ์ Lab:</b> ไขควง, กรรไกร, กุญแจ, คีม, ยางลบ, สายไฟ, ปลั๊กไฟ, เทปกาว</div>
+        </div>
+        
+        <!-- Quick Commands for Lab IT Items -->
+        <div class="quick-commands" id="quick-commands">
+            <button class="quick-cmd" data-cmd="หาไขควง">🔧 ไขควง</button>
+            <button class="quick-cmd" data-cmd="หากรรไกร">✂️ กรรไกร</button>
+            <button class="quick-cmd" data-cmd="หากุญแจ">🔑 กุญแจ</button>
+            <button class="quick-cmd" data-cmd="หาคีม">🔧 คีม</button>
+            <button class="quick-cmd" data-cmd="หายางลบ">📝 ยางลบ</button>
+            <button class="quick-cmd" data-cmd="หาสายไฟ">🔌 สายไฟ</button>
+            <button class="quick-cmd" data-cmd="หาปลั๊กไฟ">🔌 ปลั๊กไฟ</button>
+            <button class="quick-cmd" data-cmd="หาเทปกาว">📦 เทปกาว</button>
+        </div>
+        
+        <div class="controls">
+            <button class="main" id="btn-mic">🎤 Start</button>
+            <button class="main" id="btn-ask" disabled>🧠 LLM</button>
+            <button class="main" id="btn-stop" style="background: var(--danger); border-color: var(--danger);">🚨 หยุด</button>
+            <button class="main" id="btn-clear">🗑️</button>
+            <button class="main" id="btn-restart">🔄</button>
+        </div>
+    </div>
+</div>
+
+<!-- Mobile: Settings Toggle Button -->
+<button id="btn-settings-toggle">⚙️</button>
+<div class="overlay" id="settings-overlay"></div>
+
+<script>
+    // ======================== CONFIG ========================
+    const hostname = window.location.hostname;
+    const isSecure = window.location.protocol === 'https:';
+    
+    // Cloudflare Tunnel URLs (valid HTTPS for mobile)
+    const CLOUDFLARE_API = 'requests-populations-nurses-broadband.trycloudflare.com';
+    
+    // ถ้าเข้าผ่าน Cloudflare tunnel ให้ใช้ Cloudflare API
+    const isCloudflare = hostname.includes('trycloudflare.com');
+    
+    // API Base URL - ใช้สำหรับทุก API calls
+    const API_BASE = isCloudflare 
+        ? `https://${CLOUDFLARE_API}`
+        : `${isSecure ? 'https' : 'http'}://${hostname}:${isSecure ? '8000' : '8080'}`;
+    
+    let SERVER_WS_URL;
+    if (isCloudflare) {
+        // Cloudflare tunnel - ใช้ wss://
+        SERVER_WS_URL = `wss://${CLOUDFLARE_API}/ws/stt`;
+    } else if (isSecure) {
+        // Local HTTPS - port 8000
+        SERVER_WS_URL = `wss://${hostname}:8000/ws/stt`;
+    } else {
+        // Local HTTP - port 8080
+        SERVER_WS_URL = `ws://${hostname}:8080/ws/stt`;
+    }
+    
+    const GATEWAY_WS_URL = `ws://${hostname}:9001/gw/dashboard`;  // Gateway ยังใช้ ws://
+    
+    console.log(`🔌 Frontend: ${window.location.protocol}//${hostname}`);
+    console.log(`📡 STT Server: ${SERVER_WS_URL}`);
+    console.log(`🌐 API Base: ${API_BASE}`);
+    console.log(`☁️ Is Cloudflare: ${isCloudflare}`);
+    
+    // ======================== VARIABLES ========================
+    let wsServer, wsGateway;
+    let audioContext, mediaStream, processor;
+    let isRecording = false;
+    let selectedDeviceId = null;
+    let selectedSampleRate = null;  // Auto-detect from hardware
+    let selectedSilenceTimeout = 1500;  // Default: 1500ms (รอนานขึ้น)
+    let selectedMinSpeech = 1.5;  // Default: 1.5s (รอประโยคยาวขึ้น)
+    let processMode = 'transcript-only';  // Default: แค่แสดง transcript
+    let currentPartial = "";
+    let availableMics = [];
+    let ttsEnabled = true;  // TTS enabled by default
+    let ttsSpeed = 1.0;     // TTS speed
+    let currentAudio = null; // Current playing audio
+    
+    const historyDiv = document.getElementById('chat-history');
+    const liveDiv = document.getElementById('live-transcript');
+    const statusDiv = document.getElementById('conn-status');
+    const micStatusDiv = document.getElementById('mic-status');
+    const serverInfoDiv = document.getElementById('server-info');
+    const btnMic = document.getElementById('btn-mic');
+    const btnAsk = document.getElementById('btn-ask');
+    const btnStop = document.getElementById('btn-stop');
+    const btnClear = document.getElementById('btn-clear');
+    const btnRefresh = document.getElementById('btn-restart');
+    const btnRefreshMics = document.getElementById('btn-refresh-mics');
+    const micSelect = document.getElementById('mic-select');
+    const sampleRateDisplay = document.getElementById('sample-rate-display');
+    const silenceTimeoutSelect = document.getElementById('silence-timeout-select');
+    const minSpeechSelect = document.getElementById('min-speech-select');
+    const processModeSelect = document.getElementById('process-mode-select');
+    const modeSelectHeader = document.getElementById('mode-select-header');
+    const activeMicDiv = document.getElementById('active-mic');
+    
+    // Sync Mode selectors (header + sidebar)
+    function setProcessMode(mode) {
+        processMode = mode;
+        if (processModeSelect) processModeSelect.value = mode;
+        if (modeSelectHeader) modeSelectHeader.value = mode;
+        console.log(`🔄 Mode changed to: ${mode}`);
+        
+        // Enable/disable LLM button based on mode
+        if (btnAsk) {
+            btnAsk.disabled = (mode !== 'manual-llm');
+        }
+    }
+    
+    // Mode selector event listeners
+    if (processModeSelect) {
+        processModeSelect.onchange = (e) => setProcessMode(e.target.value);
+    }
+    if (modeSelectHeader) {
+        modeSelectHeader.onchange = (e) => setProcessMode(e.target.value);
+    }
+    
+    // ======================== TEXT CLEANING ========================
+    function cleanText(text) {
+        if (!text) return "";
+        
+        // 1. ลบช่องว่างเกิน
+        let cleaned = text.replace(/\s+/g, ' ').trim();
+        
+        // 2. ลบคำซ้ำติดกัน (เช่น "สวัสดี สวัสดี" → "สวัสดี")
+        const words = cleaned.split(' ');
+        const deduplicated = [];
+        for (let i = 0; i < words.length; i++) {
+            if (i === 0 || words[i] !== words[i-1]) {
+                deduplicated.push(words[i]);
+            }
+        }
+        cleaned = deduplicated.join(' ');
+        
+        // 3. ลบ filler words ภาษาไทย
+        const fillers = ['เอ่อ', 'อืม', 'อ่า', 'แบบ', 'คือ', 'ก็', 'นะ', 'ครับ', 'ค่ะ', 'จ้า', 'จ๊ะ'];
+        // ไม่ลบ filler ทั้งหมด แค่ลบถ้ามันอยู่ต้นหรือท้าย
+        for (const filler of fillers) {
+            if (cleaned.startsWith(filler + ' ')) {
+                cleaned = cleaned.slice(filler.length + 1);
+            }
+            if (cleaned.endsWith(' ' + filler)) {
+                cleaned = cleaned.slice(0, -(filler.length + 1));
+            }
+        }
+        
+        return cleaned.trim();
+    }
+    
+    // ======================== MICROPHONE ENUMERATION ========================
+    async function enumerateMicrophones() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            availableMics = devices.filter(device => device.kind === 'audioinput');
+            
+            micSelect.innerHTML = '';
+            
+            if (availableMics.length === 0) {
+                micSelect.innerHTML = '<option>❌ No microphones found</option>';
+                console.warn('❌ No audio input devices detected');
+                return;
+            }
+            
+            availableMics.forEach((mic, index) => {
+                const option = document.createElement('option');
+                const label = mic.label || `Microphone ${index + 1}`;
+                option.value = mic.deviceId;
+                option.textContent = `🎤 ${label}`;
+                micSelect.appendChild(option);
+            });
+            
+            // Auto-select first mic
+            if (availableMics.length > 0 && !selectedDeviceId) {
+                selectedDeviceId = availableMics[0].deviceId;
+                micSelect.value = selectedDeviceId;
+                updateActiveMicDisplay();
+            }
+            
+            console.log(`✅ Found ${availableMics.length} microphone(s)`);
+        } catch (error) {
+            console.error('❌ Error enumerating devices:', error);
+            
+            // If permission denied, show "Allow Microphone" button
+            if (error.name === 'NotAllowedError' || error.message.includes('Permission denied')) {
+                micSelect.innerHTML = '<option>❌ Permission denied - click Allow below</option>';
+                document.getElementById('btn-allow-mic').style.display = 'block';
+            } else if (error.name === 'NotFoundError') {
+                micSelect.innerHTML = '<option>❌ No microphones found</option>';
+            } else {
+                micSelect.innerHTML = '<option>❌ Error: ' + error.name + '</option>';
+            }
+        }
+    }
+    
+    // Request microphone permission explicitly
+    async function requestMicrophonePermission() {
+        try {
+            console.log('📋 Requesting microphone permission...');
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Close the stream immediately after permission is granted
+            stream.getTracks().forEach(track => track.stop());
+            console.log('✅ Permission granted!');
+            document.getElementById('btn-allow-mic').style.display = 'none';
+            enumerateMicrophones();
+        } catch (error) {
+            console.error('❌ Permission denied:', error);
+            alert('Microphone permission denied. Please allow microphone access in browser settings.');
+        }
+    }
+    
+    function updateActiveMicDisplay() {
+        if (!selectedDeviceId) {
+            activeMicDiv.textContent = 'None';
+            return;
+        }
+        
+        const activeMic = availableMics.find(m => m.deviceId === selectedDeviceId);
+        if (activeMic) {
+            activeMicDiv.textContent = `🎤 ${activeMic.label || 'Microphone'}`;
+        }
+    }
+    
+    micSelect.addEventListener('change', (e) => {
+        selectedDeviceId = e.target.value;
+        updateActiveMicDisplay();
+        console.log(`🎤 Selected mic: ${selectedDeviceId}`);
+    });
+    
+    // Sample Rate auto-detection (no manual selection needed)
+    async function detectSampleRate() {
+        try {
+            // สร้าง AudioContext ชั่วคราวเพื่อดู default sample rate ของ hardware
+            const tempContext = new (window.AudioContext || window.webkitAudioContext)();
+            const detectedRate = tempContext.sampleRate;
+            await tempContext.close();
+            
+            selectedSampleRate = detectedRate;
+            sampleRateDisplay.textContent = `✅ ${detectedRate/1000} kHz (auto)`;
+            console.log(`🎵 Auto-detected sample rate: ${detectedRate}Hz`);
+            return detectedRate;
+        } catch (e) {
+            // Fallback to 48kHz if detection fails
+            selectedSampleRate = 48000;
+            sampleRateDisplay.textContent = `⚠️ 48 kHz (fallback)`;
+            console.warn(`⚠️ Sample rate detection failed, using 48kHz:`, e);
+            return 48000;
+        }
+    }
+    
+    // VORA Settings listeners
+    silenceTimeoutSelect.addEventListener('change', (e) => {
+        selectedSilenceTimeout = parseInt(e.target.value);
+        console.log(`⏱️ Silence timeout: ${selectedSilenceTimeout}ms`);
+    });
+    
+    minSpeechSelect.addEventListener('change', (e) => {
+        selectedMinSpeech = parseFloat(e.target.value);
+        console.log(`📏 Min speech: ${selectedMinSpeech}s`);
+    });
+    
+    processModeSelect.addEventListener('change', (e) => {
+        processMode = e.target.value;
+        console.log(`🤖 Process mode: ${processMode}`);
+        // Update button state
+        if (processMode === 'transcript-only') {
+            btnAsk.disabled = true;
+            btnAsk.innerHTML = '🧠 Process Text (Disabled)';
+        } else if (processMode === 'manual-llm') {
+            btnAsk.disabled = false;
+            btnAsk.innerHTML = '🧠 Send to LLM';
+        } else {
+            btnAsk.disabled = true;
+            btnAsk.innerHTML = '🤖 Auto Processing';
+        }
+    });
+    
+    btnRefreshMics.addEventListener('click', enumerateMicrophones);
+    document.getElementById('btn-allow-mic').addEventListener('click', requestMicrophonePermission);
+    
+    // ======================== WEBSOCKET: STT SERVER ========================
+    function connectServer() {
+        console.log(`🔌 Connecting to: ${SERVER_WS_URL}`);
+        liveDiv.innerText = `🔌 Connecting to ${isCloudflare ? 'Cloudflare' : 'Server'}...`;
+        
+        try {
+            wsServer = new WebSocket(SERVER_WS_URL);
+            wsServer.binaryType = 'arraybuffer';
+        } catch (err) {
+            console.error('❌ WebSocket creation failed:', err);
+            liveDiv.innerText = `❌ Connection failed: ${err.message}`;
+            return;
+        }
+        
+        wsServer.onopen = () => {
+            console.log('✅ Connected to STT server');
+            liveDiv.innerText = `✅ Connected! Initializing...`;
+            updateConnectionStatus();
+            // ส่ง init พร้อม sample rate และ settings
+            const initMsg = {
+                type: "start_session",
+                session_id: `web-${Date.now()}`,
+                language: "th",
+                rate: selectedSampleRate,
+                sampleRate: selectedSampleRate,
+                silenceTimeout: selectedSilenceTimeout,
+                minSpeech: selectedMinSpeech
+            };
+            console.log('📨 Sending init:', initMsg);
+            wsServer.send(JSON.stringify(initMsg));
+        };
+        
+        wsServer.onmessage = (e) => {
+            try {
+                if (e.data instanceof ArrayBuffer) return;
+                const data = JSON.parse(e.data);
+                console.log('📩 Received:', data);
+                
+                if (data.type === 'session_started') {
+                    console.log(`✅ Session started at ${data.rate}Hz`);
+                    liveDiv.innerText = `🎤 Ready (${data.rate}Hz)`;
+                } else if (data.type === 'final' && data.text) {
+                    // Clean text before display
+                    const rawText = data.text;
+                    const cleanedText = cleanText(rawText);
+                    currentPartial = cleanedText;
+                    
+                    console.log(`📝 Raw: "${rawText}"`);
+                    console.log(`✨ Clean: "${cleanedText}"`);
+                    
+                    // แสดงทั้ง raw และ clean ใน chat
+                    addMsg('user', `🎤 ${cleanedText}`, rawText !== cleanedText ? rawText : null);
+                    liveDiv.innerText = `✅ ${cleanedText}`;
+                    
+                    // Handle based on mode
+                    if (processMode === 'auto-llm' && cleanedText.length > 0) {
+                        // Auto send to LLM
+                        sendToLLM(cleanedText);
+                    } else if (processMode === 'manual-llm') {
+                        btnAsk.disabled = false;
+                    }
+                    // transcript-only mode: แค่แสดง ไม่ทำอะไร
+                    
+                } else if (data.type === 'partial' && data.text) {
+                    currentPartial = data.text;
+                    liveDiv.innerText = `🎤 ${data.text}`;
+                }
+            } catch (err) {
+                console.error('Error parsing message:', err);
+            }
+        };
+        
+        wsServer.onerror = (err) => {
+            console.error('❌ Server error:', err);
+            liveDiv.innerText = `❌ Connection error`;
+            updateConnectionStatus();
+        };
+        
+        wsServer.onclose = (event) => {
+            console.log('🔌 Server disconnected, code:', event.code, 'reason:', event.reason);
+            liveDiv.innerText = `🔌 Disconnected (${event.code})`;
+            updateConnectionStatus();
+            setTimeout(connectServer, 3000);
+        };
+    }
+    
+    // ======================== WEBSOCKET: GATEWAY ========================
+    function connectGateway() {
+        wsGateway = new WebSocket(GATEWAY_WS_URL);
+        
+        wsGateway.onopen = () => {
+            console.log('✅ Connected to Gateway');
+            updateConnectionStatus();
+        };
+        
+        wsGateway.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                if (data.type === 'partial') {
+                    liveDiv.innerText = `🤖 Gateway: ${data.text}`;
+                } else if (data.type === 'final') {
+                    addMsg('user', `🤖 ${data.text}`);
+                    liveDiv.innerText = `✅ ${data.text}`;
+                }
+            } catch (err) {
+                console.error('Error:', err);
+            }
+        };
+        
+        wsGateway.onclose = () => {
+            console.log('🔌 Gateway disconnected');
+            updateConnectionStatus();
+            setTimeout(connectGateway, 5000);
+        };
+    }
+    
+    function updateConnectionStatus() {
+        const serverOk = wsServer && wsServer.readyState === WebSocket.OPEN;
+        const gatewayOk = wsGateway && wsGateway.readyState === WebSocket.OPEN;
+        
+        if (serverOk && gatewayOk) {
+            statusDiv.innerHTML = "🟢 Both Connected";
+            statusDiv.className = 'status-pill online';
+        } else if (serverOk) {
+            statusDiv.innerHTML = "🟡 Server Only";
+            statusDiv.className = 'status-pill partial';
+        } else if (gatewayOk) {
+            statusDiv.innerHTML = "🟡 Gateway Only";
+            statusDiv.className = 'status-pill partial';
+        } else {
+            statusDiv.innerHTML = "🔴 Not Connected";
+            statusDiv.className = 'status-pill offline';
+        }
+    }
+    
+    // ======================== MICROPHONE CAPTURE ========================
+    async function startMicrophone() {
+        try {
+            // Auto-detect sample rate ถ้ายังไม่ได้ detect
+            if (!selectedSampleRate) {
+                await detectSampleRate();
+            }
+            
+            // ไม่บังคับ sampleRate ใน constraints - ให้ browser ใช้ native rate
+            const constraints = {
+                audio: selectedDeviceId
+                    ? { deviceId: { exact: selectedDeviceId }, echoCancellation: true, noiseSuppression: true }
+                    : { echoCancellation: true, noiseSuppression: true }
+            };
+            
+            console.log(`🎤 Starting mic with constraints:`, constraints);
+            
+            mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+            
+            // สร้าง AudioContext ใหม่ - ไม่บังคับ sample rate, ใช้ค่า default ของ hardware
+            if (audioContext) {
+                await audioContext.close();
+            }
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // อัพเดท actual sample rate จาก AudioContext จริง
+            selectedSampleRate = audioContext.sampleRate;
+            sampleRateDisplay.textContent = `✅ ${selectedSampleRate/1000} kHz (actual)`;
+            console.log(`🎵 AudioContext actual sample rate: ${audioContext.sampleRate}Hz`);
+            
+            const source = audioContext.createMediaStreamSource(mediaStream);
+            processor = audioContext.createScriptProcessor(4096, 1, 1);
+            
+            processor.onaudioprocess = (e) => {
+                if (!isRecording || !wsServer || wsServer.readyState !== WebSocket.OPEN) return;
+                const inputData = e.inputBuffer.getChannelData(0);
+                const pcm16 = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7fff;
+                }
+                wsServer.send(pcm16.buffer);
+            };
+            
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+            isRecording = true;
+            
+            micStatusDiv.innerHTML = `🎤 Recording (${selectedSampleRate/1000}kHz)`;
+            micStatusDiv.className = 'status-pill online';
+            btnMic.classList.add('listening');
+            btnMic.innerHTML = "⏹️ Stop";
+            liveDiv.innerText = "🎤 Listening...";
+            
+            // อัพเดท display อีกครั้งหลังจากเริ่ม recording จริง
+            sampleRateDisplay.textContent = `✅ ${selectedSampleRate/1000} kHz`;
+            
+        } catch (error) {
+            console.error('❌ Mic error:', error);
+            alert('Microphone access denied');
+        }
+    }
+    
+    function stopMicrophone() {
+        if (processor) processor.disconnect();
+        if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+        
+        isRecording = false;
+        micStatusDiv.innerHTML = "🎤 Mic OFF";
+        micStatusDiv.className = 'status-pill offline';
+        btnMic.classList.remove('listening');
+        btnMic.innerHTML = "🎤 Start";
+    }
+    
+    // ======================== EVENT LISTENERS ========================
+    btnMic.onclick = () => isRecording ? stopMicrophone() : startMicrophone();
+    btnAsk.onclick = () => {
+        if (currentPartial && processMode === 'manual-llm') {
+            sendToLLM(currentPartial);
+        }
+    };
+    btnStop.onclick = emergencyStop;
+    btnClear.onclick = () => {
+        historyDiv.innerHTML = '<div class="msg vora">🗑️ Chat cleared</div>';
+        currentPartial = "";
+        liveDiv.innerText = "Waiting for input...";
+        stopTTS();  // Stop any playing audio
+    };
+    btnRefresh.onclick = () => location.reload();
+    
+    // TTS Settings
+    document.getElementById('tts-enabled').onchange = (e) => {
+        ttsEnabled = e.target.checked;
+        console.log(`🔊 TTS: ${ttsEnabled ? 'ON' : 'OFF'}`);
+    };
+    document.getElementById('tts-speed-select').onchange = (e) => {
+        ttsSpeed = parseFloat(e.target.value);
+        console.log(`🔊 TTS Speed: ${ttsSpeed}x`);
+    };
+    
+    // ======================== TTS FUNCTIONS ========================
+    async function playTTS(text) {
+        if (!ttsEnabled || !text) return;
+        
+        const ttsUrl = `${API_BASE}/api/server/tts/speak`;
+        
+        console.log(`🔊 TTS request to ${ttsUrl}: ${text.substring(0, 30)}...`);
+        
+        try {
+            const response = await fetch(ttsUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: text,
+                    speed: ttsSpeed,
+                    voice: 'default',
+                    format: 'wav'
+                })
+            });
+            
+            if (response.ok) {
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                
+                // Stop previous audio
+                stopTTS();
+                
+                // Play new audio
+                currentAudio = new Audio(audioUrl);
+                currentAudio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    currentAudio = null;
+                };
+                currentAudio.onerror = (e) => {
+                    console.error('TTS playback error:', e);
+                    currentAudio = null;
+                };
+                
+                await currentAudio.play();
+                console.log('🔊 TTS playing...');
+            } else {
+                console.error('TTS error:', response.status);
+            }
+        } catch (error) {
+            console.error('TTS error:', error);
+        }
+    }
+    
+    function stopTTS() {
+        if (currentAudio) {
+            currentAudio.pause();
+            currentAudio = null;
+        }
+    }
+    
+    // ======================== EMERGENCY STOP ========================
+    async function emergencyStop() {
+        stopMicrophone();
+        stopTTS();
+        
+        const stopUrl = `${API_BASE}/api/server/emergency-stop`;
+        
+        addMsg('vora', '🚨 <b>EMERGENCY STOP</b> - ส่งคำสั่งหยุดฉุกเฉิน...');
+        
+        try {
+            const response = await fetch(stopUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            if (response.ok) {
+                addMsg('vora', '✅ หยุดทุกอย่างแล้ว - ระบบอยู่ในโหมดฉุกเฉิน');
+            } else {
+                addMsg('vora', '⚠️ ส่งคำสั่งหยุดแล้ว (server อาจไม่ตอบ)');
+            }
+        } catch (error) {
+            console.error('Emergency stop error:', error);
+            addMsg('vora', '⚠️ หยุดฝั่ง client แล้ว (ไม่สามารถติดต่อ server)');
+        }
+    }
+    
+    // ======================== LLM INTEGRATION ========================
+    async function sendToLLM(text) {
+        if (!text || text.trim().length === 0) return;
+        
+        addMsg('vora', "🧠 กำลังประมวลผล...");
+        
+        try {
+            // ใช้ /pipeline/command endpoint (NEW: Full Pipeline)
+            const apiUrl = `${API_BASE}/pipeline/command`;
+            console.log(`📡 Sending to Pipeline: ${apiUrl}`);
+            
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    text: text,
+                    session_id: `web-${Date.now()}`,
+                    image_base64: null  // TODO: เพิ่มภาพจากกล้องถ้าต้องการ
+                })
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                console.log('📩 Pipeline Response:', data);
+                
+                // แสดง intent และ target
+                if (data.intent) {
+                    const intentEmoji = {
+                        'find_object': '🔍',
+                        'navigate': '🚗',
+                        'control': '🎮',
+                        'question': '❓',
+                        'chitchat': '💬'
+                    }[data.intent] || '🤖';
+                    
+                    let infoText = `${intentEmoji} <b>${data.intent}</b>`;
+                    if (data.target) {
+                        infoText += ` → ${data.target}`;
+                    }
+                    addMsg('vora', infoText, null, 'info');
+                }
+                
+                // แสดงคำตอบหลัก
+                addMsg('vora', `🤖 ${data.response_text || 'รับทราบครับ'}`);
+                
+                // 🔊 Play TTS response
+                if (data.response_text && ttsEnabled) {
+                    playTTS(data.response_text);
+                }
+                
+                // แสดง commands ที่จะส่งไป Robot (ถ้ามี)
+                if (data.commands && data.commands.length > 0) {
+                    const cmdList = data.commands.map(c => 
+                        `• <code>${c.cmd}</code>: ${JSON.stringify(c.params)}`
+                    ).join('<br>');
+                    addMsg('vora', `🤖 Robot Commands:<br>${cmdList}`, null, 'info');
+                }
+                
+                // แสดง Vision result (ถ้ามี)
+                if (data.vision_result && data.vision_result.object_found) {
+                    const v = data.vision_result;
+                    addMsg('vora', `👁️ เจอ <b>${v.object_name}</b> อยู่ทาง <b>${v.object_location}</b> (${Math.round(v.confidence*100)}%)`, null, 'info');
+                }
+                
+            } else {
+                const errorText = await response.text();
+                console.error('Pipeline Error:', response.status, errorText);
+                addMsg('vora', `❌ Error ${response.status}: ${errorText}`);
+            }
+        } catch (error) {
+            console.error('Pipeline Error:', error);
+            addMsg('vora', `❌ Connection Error: ${error.message}`);
+        }
+    }
+    
+    function addMsg(role, text, rawText = null, msgType = null) {
+        if (!text) return;
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `msg ${role}`;
+        
+        // Style based on message type
+        if (msgType === 'info') {
+            msgDiv.style.background = 'rgba(88,166,255,0.1)';
+            msgDiv.style.borderLeft = '3px solid var(--accent)';
+            msgDiv.style.fontSize = '12px';
+        } else if (msgType === 'sources') {
+            msgDiv.style.background = 'rgba(35,134,54,0.1)';
+            msgDiv.style.borderLeft = '3px solid var(--success)';
+            msgDiv.style.fontSize = '11px';
+        }
+        
+        let content = `<b>${role === 'user' ? '👤' : '🤖'}:</b> ${text}`;
+        
+        // แสดง raw text ถ้าต่างจาก cleaned
+        if (rawText && rawText !== text) {
+            content += `<br><small style="color: var(--text-secondary); font-size: 10px;">📝 Raw: ${rawText}</small>`;
+        }
+        
+        msgDiv.innerHTML = content;
+        historyDiv.appendChild(msgDiv);
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+    }
+    
+    // ======================== INITIALIZATION ========================
+    // แสดง server info ตาม connection type
+    if (isCloudflare) {
+        serverInfoDiv.innerText = `📡 Cloudflare Tunnel`;
+    } else {
+        serverInfoDiv.innerText = `📡 ${hostname}:${isSecure ? '8000' : '8080'}`;
+    }
+    
+    // Auto-detect sample rate และ enumerate mics พร้อมกัน
+    detectSampleRate();
+    enumerateMicrophones();
+    navigator.mediaDevices.addEventListener('devicechange', enumerateMicrophones);
+    
+    connectServer();
+    connectGateway();
+    updateConnectionStatus();
+    setInterval(updateConnectionStatus, 1000);
+    
+    // ======================== QUICK COMMANDS ========================
+    document.querySelectorAll('.quick-cmd').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const cmd = btn.dataset.cmd;
+            console.log(`⚡ Quick command: ${cmd}`);
+            
+            // แสดงคำสั่งใน Live Transcript
+            liveDiv.innerText = `🎯 ${cmd}`;
+            currentPartial = cmd;
+            
+            // ถ้า mode เป็น auto-llm ให้ส่งเลย
+            if (processMode === 'auto-llm') {
+                sendToLLM(cmd);
+            } else {
+                // แสดงใน chat history
+                addMessage('user', cmd);
+                // เปิดใช้ปุ่ม LLM ถ้าเป็น manual mode
+                if (processMode === 'manual-llm') {
+                    btnAsk.disabled = false;
+                }
+            }
+        });
+    });
+    
+    // ======================== MOBILE SETTINGS TOGGLE ========================
+    const settingsToggle = document.getElementById('btn-settings-toggle');
+    const settingsOverlay = document.getElementById('settings-overlay');
+    const sidebar = document.querySelector('.sidebar');
+    
+    console.log('📱 Mobile settings init:', { settingsToggle, settingsOverlay, sidebar });
+    
+    if (settingsToggle && sidebar) {
+        settingsToggle.addEventListener('click', () => {
+            console.log('⚙️ Settings toggle clicked');
+            const isOpen = sidebar.classList.toggle('mobile-open');
+            settingsOverlay.classList.toggle('active');
+            settingsToggle.textContent = isOpen ? '✕' : '⚙️';
+        });
+        
+        settingsOverlay.addEventListener('click', () => {
+            console.log('🔲 Overlay clicked - closing');
+            sidebar.classList.remove('mobile-open');
+            settingsOverlay.classList.remove('active');
+            settingsToggle.textContent = '⚙️';
+        });
+    } else {
+        console.error('❌ Settings elements not found!');
+    }
+</script>
+
+</body>
+</html>

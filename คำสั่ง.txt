@@ -1,12 +1,19 @@
+# ===== OPTION 1: เรียบง่าย (รัน 1 script เดียว) =====
+conda activate vora
+./start_all.sh
+
+http://192.168.104.31:9000
+นี่ลิ้ง index.html
+
+
+# ===== OPTION 2: เดิม (รัน 2 terminal แยก) =====
+# Terminal 1:
 conda activate vora
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-
-
-
-
-cd frontend
-python -m http.server 9000
+# Terminal 2:
+cd /home/user/vora_project/VORA/VORA/app/frontend
+python -m http.server 9000 --bind 0.0.0.0
 
 
 

@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any
 import httpx
-from ..core.config import settings
+from ..core.settings import settings
 
 class TTSProxyError(Exception):
     pass
