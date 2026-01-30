@@ -1,34 +1,52 @@
 #!/usr/bin/env python3
+"""
+HTTPS Server for VORA Frontend
+Allows microphone access on non-localhost connections
+"""
 import http.server
 import ssl
 import os
 import sys
 
-# Change to frontend directory
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+PORT = 9443
+DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
-handler = http.server.SimpleHTTPRequestHandler
+# Change to frontend directory
+os.chdir(DIRECTORY)
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         # Only log errors
-        if args[0] != 200:
-            print(f"[{args[0]}] {args[1] if len(args) > 1 else ''}")
+        if '404' in str(args) or '500' in str(args):
+            print(f"[ERROR] {args}")
 
 try:
+    # SSL certificates in same directory
+    cert_path = os.path.join(DIRECTORY, 'cert.pem')
+    key_path = os.path.join(DIRECTORY, 'key.pem')
+    
+    if not os.path.exists(cert_path) or not os.path.exists(key_path):
+        print("❌ SSL certificates not found!")
+        print(f"   Looking for: {cert_path}")
+        sys.exit(1)
+    
     # Setup HTTPS server
-    httpd = http.server.HTTPServer(('0.0.0.0', 9000), QuietHandler)
-    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    
-    # Certificates in parent directory
-    cert_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cert.pem')
-    key_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'key.pem')
-    
-    print(f"🔒 Loading SSL certificates from:\n  cert: {cert_path}\n  key: {key_path}")
+    httpd = http.server.HTTPServer(('0.0.0.0', PORT), QuietHandler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert_path, key_path)
     
     httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
-    print("✅ HTTPS Server running on https://0.0.0.0:9000")
+    
+    print(f"🔒 HTTPS Server running on port {PORT}")
+    print(f"")
+    print(f"📱 Access from mobile:")
+    print(f"   https://100.102.217.45:{PORT}")
+    print(f"   https://192.168.104.31:{PORT}")
+    print(f"")
+    print(f"⚠️  Browser will show 'Not Secure' warning")
+    print(f"   → Click 'Advanced' → 'Proceed anyway'")
+    print(f"🎤 Microphone will work after accepting!")
+    
     httpd.serve_forever()
 except Exception as e:
     print(f"❌ Error: {e}", file=sys.stderr)

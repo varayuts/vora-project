@@ -1,8 +1,10 @@
 import logging
 import os
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, Response
 
 # นำเข้า settings เดิมของคุณ
 from .core.settings import settings
@@ -11,12 +13,10 @@ from .core.settings import settings
 from .api.stt_ws import router as stt_router, register_ws
 from .api.llm_router import router as llm_router
 from .api.agent_router import router as agent_router
-from .api.search_router import router as search_router
-from .api.tts_router import router as tts_router
 from .api.plan_router import router as plan_router
 from .api.robot_planner import router as robot_planner_router
 from .api.pipeline_router import router as pipeline_router
-from .api.server_router import router as server_router  # NEW: Server APIs (TTS, Queue, State)   
+from .api.server_router import router as server_router  # Server APIs (TTS gTTS, Queue, State)   
 
 # ตั้งค่า Logger เพื่อดูสถานะการโหลดโมเดลใน A6000
 logging.basicConfig(level=logging.INFO)
@@ -76,18 +76,6 @@ async def startup_checks():
     except Exception as e:
         logger.warning(f"⚠️ Cannot reach Ollama at {ollama_host}: {e}")
     
-    # Check SearXNG (optional)
-    searxng_url = os.getenv("SEARXNG_URL", "http://127.0.0.1:8080")
-    try:
-        async with httpx.AsyncClient(timeout=0.5) as client:
-            resp = await client.get(f"{searxng_url}/status")
-            if resp.status_code == 200:
-                logger.info(f"✅ SearXNG reachable")
-    except asyncio.TimeoutError:
-        logger.debug(f"⚠️ SearXNG timeout (non-blocking)")
-    except Exception as e:
-        logger.debug(f"⚠️ SearXNG not available (optional): {e}")
-    
     # Report results
     if errors:
         logger.error("\n".join(errors))
@@ -103,8 +91,38 @@ def health():
         "status": "ok",
         "gpu_enabled": True,
         "model": getattr(settings, "OLLAMA_MODEL", None),
-        "searxng": getattr(settings, "SEARXNG_URL", None),
+        "tts": getattr(settings, "TTS_BACKEND", "gtts"),
     }
+
+@app.get("/config.js")
+def config_js(request: Request):
+    """
+    Dynamic config injection - Frontend จะโหลด script นี้เพื่อรับ port/host
+    ตัวอย่าง: http://localhost:8080/config.js
+    """
+    # อ่าน port จาก environment หรือ default
+    api_port = int(os.getenv("VORA_API_PORT", "8080"))
+    frontend_port = int(os.getenv("VORA_FRONTEND_PORT", "9000"))
+    is_https = os.getenv("VORA_HTTPS", "false").lower() == "true"
+    
+    # สร้าง JavaScript config
+    config_content = f"""
+// VORA Runtime Configuration (Auto-generated)
+window.VORA_CONFIG = {{
+    API_PORT: {api_port},
+    FRONTEND_PORT: {frontend_port},
+    IS_HTTPS: {str(is_https).lower()},
+    WS_ENDPOINT: '/ws/stt',
+    GENERATED_AT: '{__import__("datetime").datetime.now().isoformat()}'
+}};
+console.log('✅ VORA Config loaded:', window.VORA_CONFIG);
+"""
+    
+    return Response(
+        content=config_content,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 @app.get("/")
 def root():
@@ -124,15 +142,52 @@ def status():
 
 app.include_router(llm_router,     prefix="",         tags=["LLM"])
 app.include_router(agent_router,   prefix="/agent",   tags=["Agent"])
-app.include_router(search_router,  prefix="/search",  tags=["Search"])
-app.include_router(tts_router,     prefix="/tts",     tags=["TTS"])
 app.include_router(plan_router,    prefix="/plan",    tags=["Plan"])
 app.include_router(robot_planner_router, prefix="/robot", tags=["Robot"])
 app.include_router(pipeline_router)  # /pipeline/* endpoints
-app.include_router(server_router)    # /api/server/* endpoints (TTS Thai, Queue, State)
+app.include_router(server_router)    # /api/server/* endpoints (TTS gTTS, Queue, State)
 
 # ลงทะเบียน WebSocket STT หลัง HTTP routes
 register_ws(app)
+
+# ------------------------------------------------------------------------------------
+# Static Files & Frontend Serving
+# ------------------------------------------------------------------------------------
+
+# Serve frontend static files (CSS, JS, images)
+app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+frontend_dir = os.path.join(app_root, "app", "frontend")
+
+logger.info(f"📁 App root: {app_root}")
+logger.info(f"📁 Frontend dir: {frontend_dir}")
+
+if os.path.exists(frontend_dir):
+    # Serve static assets
+    app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+    logger.info(f"✅ Serving static files from {frontend_dir}")
+    
+    @app.get("/app")
+    @app.get("/app/")
+    async def serve_app():
+        """Serve the main web app (index.html)"""
+        index_path = os.path.join(frontend_dir, "index.html")
+        if os.path.exists(index_path):
+            logger.info(f"📄 Serving index.html from {index_path}")
+            return FileResponse(index_path)
+        else:
+            logger.error(f"❌ index.html not found at {index_path}")
+            return {"error": "Frontend index.html not found", "path": index_path}
+    
+    @app.get("/debug")
+    async def serve_debug():
+        """Debug page for testing connectivity"""
+        debug_path = os.path.join(frontend_dir, "debug.html")
+        if os.path.exists(debug_path):
+            return FileResponse(debug_path)
+        else:
+            return {"error": "debug.html not found"}
+else:
+    logger.warning(f"⚠️ Frontend directory not found at {frontend_dir}")
 
 # ------------------------------------------------------------------------------------
 

@@ -1,0 +1,418 @@
+# 🤖 AI PROMPT - MYAGV (Jetson Nano)
+
+**Platform:** Jetson Nano (Ubuntu 20.04 + ROS2 Galactic)  
+**Role:** Robot Platform (Audio Capture + Command Execution)  
+**IP:** 192.168.0.111 (Static ✅)  
+**Access:** SSH from any device  
+**Date:** 30 มกราคม 2026
+
+---
+
+## 🔌 SSH CONNECTION
+
+```bash
+# From any device on network:
+ssh er@192.168.0.111
+# Password: [your password]
+
+# From Gateway (Windows):
+ssh er@192.168.0.111
+
+# From Server (A6000):
+ssh er@192.168.0.111
+```
+
+---
+
+## 🎯 CURRENT STATUS
+
+### ✅ Working:
+- Static IP: 192.168.0.111
+- ROSBridge: ws://192.168.0.111:9090
+- Command Executor: Listening on /vora/command
+- ReSpeaker 4 Mic Array: Audio streaming to Gateway
+- Motor controller: **ขยับได้แต่แค่แปปเดียว** ⚠️
+
+### ⚠️ Issues:
+- **Audio high latency**: อัดเสียง → ส่ง Gateway → รอนาน → transcript
+- **Continuous recording**: ไม่หยุด auto (record ไปแล้ว 153.6s+)
+- **Motor duration**: Robot ขยับแค่ ~0.5s แทนที่จะเป็น 2s
+- **No silence detection**: ควรหยุด record หลัง 3s เงียบ
+
+---
+
+## 📁 KEY FILES
+
+```
+~/Desktop/VORA_myAGV_only_ros2_package/new/
+├── start_myagv.sh             # ⚠️ Startup script (3 terminals)
+├── send_audio_to_gateway.py   # ⚠️ Audio streaming (latency issue)
+├── README_MYAGV_ONLY.md       # Setup guide
+├── vora_robot_bridge/         # ROS2 package
+│   ├── package.xml
+│   ├── setup.py
+│   └── vora_robot_bridge/
+│       ├── __init__.py
+│       └── command_executor.py  # ⚠️ Command receiver
+
+~/vora_ws/                      # ROS2 workspace
+└── src/vora_robot_bridge/      # Built package
+
+~/myagv_ros2/                   # MyAGV hardware packages
+└── src/
+    ├── myagv_odometry/         # Motor controller?
+    ├── myagv_description/      # URDF
+    └── myagv_navigation2/      # Nav2
+```
+
+---
+
+## 🔧 STARTUP COMMANDS
+
+### Quick Start (Automated):
+```bash
+cd ~/Desktop/VORA_myAGV_only_ros2_package/new
+./start_myagv.sh 192.168.0.60
+
+# Opens 3 terminals:
+# - Terminal 1: ROSBridge
+# - Terminal 2: Command Executor
+# - Terminal 3: Audio Stream
+```
+
+### Manual Start (3 terminals):
+
+**Terminal 1 - ROSBridge:**
+```bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+# Port: 9090 (ws://192.168.0.111:9090)
+```
+
+**Terminal 2 - Command Executor:**
+```bash
+cd ~/vora_ws
+source install/setup.bash
+ros2 run vora_robot_bridge command_executor
+
+# Should show:
+# [INFO] Command Executor Node Started
+# [INFO] Listening on: /vora/command
+```
+
+**Terminal 3 - Audio Stream:**
+```bash
+cd ~/Desktop/VORA_myAGV_only_ros2_package/new
+python3 send_audio_to_gateway.py \
+  --gateway-ws ws://192.168.0.60:9001/gw/audio \
+  --device ReSpeaker \
+  --lang th \
+  --rate 16000
+
+# Should show:
+# [INFO] Found device #11: ReSpeaker 4 Mic Array (UAC1.0)
+# [INFO] 🎤 Recording... Press Ctrl+C to stop
+```
+
+---
+
+## 🎯 PROBLEMS TO FIX
+
+### 🔴 Priority 1: Audio High Latency
+
+**Symptom:**
+- พูด → Audio ส่งไป Gateway → รอ 5-10 วินาที → ได้ transcript
+- Latency สูงกว่า Mobile webapp มาก
+
+**Current Log:**
+```
+[INFO] Sent 2400 chunks (153.6s audio)
+# ส่งต่อเนื่อง ไม่หยุด!
+```
+
+**Possible Causes:**
+1. **Network latency** (WiFi?)
+   - Check: ping 192.168.0.60
+   - Expected: < 10ms
+   
+2. **Chunk size too large**
+   - Current: 1024 frames (64ms @ 16kHz)
+   - Try: 512 or 256 frames
+   
+3. **No silence detection**
+   - Recording ตลอด แม้ไม่มีเสียง
+   - ควรหยุดหลัง 3s เงียบ
+   
+4. **Audio processing overhead**
+   - WebSocket send blocking?
+   - PyAudio callback too slow?
+
+**Where to Fix:**
+- `send_audio_to_gateway.py` - Main audio loop
+
+
+### 🟡 Priority 2: No Auto-Stop (Silence Detection)
+
+**Issue:**
+- Record ตลอด ไม่หยุดอัตโนมัติ
+- ต้องกด Ctrl+C เพื่อหยุด
+
+**Should Do:**
+- Detect silence (RMS < threshold)
+- Stop after 3 seconds of silence
+- Auto-restart when speech detected
+
+**Implementation:**
+```python
+# In send_audio_to_gateway.py
+
+# Add silence detection
+def detect_silence(audio_data, threshold=500):
+    rms = np.sqrt(np.mean(audio_data**2))
+    return rms < threshold
+
+# Add state machine:
+# - LISTENING: Send audio chunks
+# - SILENT: Count silent frames
+# - STOPPED: Wait for speech to restart
+```
+
+
+### 🟢 Priority 3: Motor Duration Issue
+
+**Issue:**
+- Gateway sends: `duration: 2.0`
+- Robot moves: ~0.5s only
+
+**Check Command Executor:**
+```bash
+# View current code
+cat ~/vora_ws/src/vora_robot_bridge/vora_robot_bridge/command_executor.py
+
+# Look for:
+# - Does it receive duration parameter?
+# - Does it publish /cmd_vel for that duration?
+# - Or just publish once?
+```
+
+**Expected Behavior:**
+```python
+# Receive: {"intent": "move_forward", "duration": 2.0}
+# Should: Publish /cmd_vel at 10Hz for 2 seconds (20 messages)
+# Not: Publish once and stop
+```
+
+
+---
+
+## 🧪 TESTING
+
+### Test Audio Latency:
+```bash
+# Terminal 1: Start audio stream
+python3 send_audio_to_gateway.py --gateway-ws ws://192.168.0.60:9001/gw/audio
+
+# Speak into mic: "วัวล่า ไปข้างหน้า"
+# Measure time:
+# T0: Finish speaking
+# T1: Gateway shows transcript (check Gateway logs)
+# Latency = T1 - T0
+
+# Expected: < 2s
+# Current: 5-10s
+```
+
+### Test Network:
+```bash
+# Check WiFi latency
+ping 192.168.0.60
+# Expected: < 10ms
+
+# Check bandwidth
+iperf3 -c 192.168.0.60
+# (If iperf3 installed)
+```
+
+### Test Motor Controller:
+```bash
+# Manual test
+ros2 topic pub --rate 10 /cmd_vel geometry_msgs/Twist \
+  "{linear: {x: 0.1, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+
+# Robot should move continuously while publishing
+# Press Ctrl+C to stop
+# Time it: Should move for as long as you publish
+```
+
+### Test Command Executor:
+```bash
+# Send test command
+ros2 topic pub --once /vora/command std_msgs/String \
+  '{"data":"{\"intent\":\"move_forward\",\"duration\":2.0}"}'
+
+# Check result
+ros2 topic echo /vora/result --once
+
+# Monitor /cmd_vel
+ros2 topic echo /cmd_vel
+# Should see messages for 2 seconds
+```
+
+---
+
+## 🔍 KEY CODE TO REVIEW
+
+### 1. Audio Streaming (send_audio_to_gateway.py)
+
+**Current Issues:**
+```python
+# Line ~100-150: Audio capture loop
+CHUNK = 1024  # ⚠️ Try smaller? 512 or 256
+
+# Missing: Silence detection
+# Missing: Auto-stop after silence
+# Missing: Latency measurement logging
+
+# Add:
+start_time = time.time()
+# ... send chunk ...
+logger.info(f"Chunk latency: {time.time() - start_time:.3f}s")
+```
+
+**Add Silence Detection:**
+```python
+import numpy as np
+
+silent_chunks = 0
+SILENCE_THRESHOLD = 500  # RMS threshold
+SILENCE_DURATION = 3     # seconds
+SILENCE_CHUNKS_MAX = int(SILENCE_DURATION * RATE / CHUNK)
+
+while True:
+    data = stream.read(CHUNK)
+    audio_array = np.frombuffer(data, dtype=np.int16)
+    rms = np.sqrt(np.mean(audio_array**2))
+    
+    if rms < SILENCE_THRESHOLD:
+        silent_chunks += 1
+        if silent_chunks > SILENCE_CHUNKS_MAX:
+            logger.info("Silence detected, stopping...")
+            break
+    else:
+        silent_chunks = 0
+    
+    # Send to Gateway
+    await ws.send(data)
+```
+
+
+### 2. Command Executor (command_executor.py)
+
+**Check Duration Handling:**
+```python
+# Expected structure:
+def command_callback(self, msg):
+    data = json.loads(msg.data)
+    intent = data.get('intent')
+    duration = data.get('duration', 2.0)  # ⚠️ Is this used?
+    
+    if intent == 'move_forward':
+        # ⚠️ Should publish for 'duration' seconds
+        # Not just once!
+        
+        # Current (wrong):
+        twist = Twist()
+        twist.linear.x = 0.1
+        self.cmd_vel_pub.publish(twist)
+        # → Publishes once, robot moves tiny bit
+        
+        # Correct:
+        rate = self.create_rate(10)  # 10 Hz
+        end_time = self.get_clock().now() + Duration(seconds=duration)
+        while self.get_clock().now() < end_time:
+            twist = Twist()
+            twist.linear.x = 0.1
+            self.cmd_vel_pub.publish(twist)
+            rate.sleep()
+        
+        # Stop
+        twist = Twist()
+        self.cmd_vel_pub.publish(twist)
+```
+
+
+---
+
+## 📊 PERFORMANCE TARGETS
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| Audio latency | 5-10s | < 1s |
+| Network ping | < 10ms | < 5ms |
+| Motor duration | 0.5s | 2s (as commanded) |
+| Audio auto-stop | Never | 3s after silence |
+| Chunk send rate | ? | Real-time (64ms/chunk) |
+
+---
+
+## 💡 TIPS FOR THIS SESSION
+
+1. **Start with network test** - ping, check WiFi signal
+2. **Add logging** - Timestamp every step in send_audio_to_gateway.py
+3. **Test one change at a time** - Chunk size, then silence, then duration
+4. **Monitor resources** - top, jtop (Jetson stats)
+5. **Compare with manual test** - ros2 topic pub to isolate issues
+
+---
+
+## 🚨 DON'T BREAK
+
+- Static IP: 192.168.0.111 (locked in NetworkManager)
+- ROSBridge port: 9090 (Gateway depends on this)
+- Audio format: 16kHz mono (Server expects this)
+- ROS2 topic names: /vora/command, /cmd_vel, /vora/result
+- Command Executor JSON format (Gateway sends this)
+
+---
+
+## 📝 NEXT STEPS
+
+[ ] 1. Measure current latency breakdown:
+       ```bash
+       # Add timestamps to send_audio_to_gateway.py
+       # Log: Capture → Send → (wait for transcript in Gateway)
+       ```
+
+[ ] 2. Test network:
+       ```bash
+       ping 192.168.0.60
+       # Check for packet loss
+       ```
+
+[ ] 3. Add silence detection to send_audio_to_gateway.py
+
+[ ] 4. Test smaller chunk size (512 instead of 1024)
+
+[ ] 5. Fix command_executor.py duration handling
+
+[ ] 6. Rebuild and test:
+       ```bash
+       cd ~/vora_ws
+       colcon build --packages-select vora_robot_bridge
+       source install/setup.bash
+       ros2 run vora_robot_bridge command_executor
+       ```
+
+[ ] 7. Full end-to-end test with optimizations
+
+---
+
+## 🔗 RELATED
+
+- Server prompt: AI_PROMPT_SERVER.txt
+- Gateway prompt: AI_PROMPT_GATEWAY.txt
+- Progress: PROGRESS_30JAN2026.txt
+- Setup guide: README_MYAGV_ONLY.md
+
+---
+
+**Ready to optimize audio and motor control!** 🎤🤖

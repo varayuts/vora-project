@@ -42,3 +42,10 @@ class MemoryClearRequest(BaseModel):
 class MemoryState(BaseModel):
     session_id: str
     turns: List[Dict[str, Any]]
+
+
+# Robot Commands
+class RobotCommand(BaseModel):
+    cmd: str = Field(..., description="Command name")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Command parameters")
+    priority: int = Field(2, description="Priority (0=emergency, 1=high, 2=normal, 3=low)")

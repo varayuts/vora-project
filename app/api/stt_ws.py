@@ -16,17 +16,18 @@ router = APIRouter()
 TARGET_SR = 16000
 SAMPLE_WIDTH = 2
 
-# ===== TUNING PARAMETERS =====
+# ===== TUNING PARAMETERS (OPTIMIZED FOR LOW LATENCY) =====
 # จังหวะการประมวลผล
-STEP_SEC = 1.0                 # ประมวลผลทุก 1 วินาที
-MIN_PARTIAL_SEC = 1.5          # เพิ่มจาก 0.8 → 1.5 เพื่อรอประโยคยาวขึ้น
-EOU_SILENCE_MS = 1500          # เพิ่มจาก 800 → 1500ms รอให้คนพูดจบ
-EOU_RMS_THRESH = 0.008         # ลดจาก 0.01 → 0.008 (ไวต่อความเงียบมากขึ้น)
+STEP_SEC = 0.5                 # ประมวลผลทุก 0.5 วินาที (เร็วขึ้น 2x)
+MIN_PARTIAL_SEC = 1.0          # ลดจาก 2.5 → 1.0 (เริ่มแปลเร็วขึ้น)
+EOU_SILENCE_MS = 1200          # ลดจาก 2500 → 1200ms (รู้ว่าจบเร็วขึ้น)
+EOU_RMS_THRESH = 0.008         # เพิ่มจาก 0.005 → 0.008 (ตัดเงียบเร็วขึ้น)
+DEBOUNCE_SEC = 0.5             # ลดจาก 3.0 → 0.5 วินาที (ส่ง final บ่อยขึ้น)
 
 # Whisper Transcription Settings
 WHISPER_BEAM_SIZE = 5          # beam_size 5 สำหรับความแม่นยำ
-WHISPER_VAD_THRESHOLD = 0.4    # ลดจาก 0.5 → 0.4 (ไวต่อเสียงพูดมากขึ้น)
-WHISPER_MIN_SILENCE_MS = 500   # เพิ่มจาก 300 → 500 (รอให้พูดจบคำ)
+WHISPER_VAD_THRESHOLD = 0.5    # เพิ่มจาก 0.4 → 0.5 (ลดการ detect noise เป็น speech)
+WHISPER_MIN_SILENCE_MS = 800   # เพิ่มจาก 500 → 800 (รอให้พูดจบประโยค)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 # Try local model first, fallback to "base"
@@ -182,8 +183,8 @@ class FFmpegDecoder:
             return
         try:
             while self.proc and self.proc.stdout:
-                # อ่าน 200ms พอคราว (ก่อน 100ms = เร็วเกิน)
-                chunk = await self.proc.stdout.read(6400)  # 200ms at 16kHz
+                # ลดเหลือ 100ms สำหรับ real-time processing
+                chunk = await self.proc.stdout.read(3200)  # 100ms at 16kHz (ลดจาก 200ms)
                 if not chunk:
                     break
                 await self.queue.put(chunk)
@@ -213,6 +214,7 @@ async def ws_stt(ws: WebSocket):
     pcm_buf = PCMBuffer(TARGET_SR)
     decoder = FFmpegDecoder()
     last_emit_time = 0.0
+    last_final_time = 0.0  # เวลาที่ส่ง final ล่าสุด (สำหรับ debounce)
     silence_counter = 0.0
     session_lang = "th"
     is_started = False
@@ -220,7 +222,9 @@ async def ws_stt(ws: WebSocket):
     total_bytes_received = 0
 
     async def process_audio_queue():
-        nonlocal last_emit_time, silence_counter, audio_chunk_count, total_bytes_received
+        nonlocal last_emit_time, last_final_time, silence_counter, audio_chunk_count, total_bytes_received
+        import time
+        
         while True:
             try:
                 chunk = await decoder.queue.get()
@@ -232,27 +236,39 @@ async def ws_stt(ws: WebSocket):
                 pcm_buf.append(chunk)
                 
                 now = pcm_buf.seconds_since_final()
+                current_time = time.time()
                 
-                # ตรวจความเงียบ
-                chunk_audio = bytes_s16_to_float32(chunk[-640:] if len(chunk) >= 640 else chunk)
+                # ตรวจความเงียบ (ปรับให้ตรงกับ chunk size ใหม่)
+                chunk_audio = bytes_s16_to_float32(chunk[-320:] if len(chunk) >= 320 else chunk)
                 if len(chunk_audio) > 0:
                     tail_rms = np.sqrt(np.mean(chunk_audio**2))
                     
                     if tail_rms < EOU_RMS_THRESH:
-                        silence_counter += 0.2  # chunk ~200ms
+                        silence_counter += 0.1  # chunk ~100ms (ลดจาก 0.2)
                     else:
                         silence_counter = 0
 
                 # เฉพาะเมื่อเงียบลง = end-of-utterance
                 if silence_counter >= EOU_SILENCE_MS / 1000:  # Convert to seconds
-                    if now > MIN_PARTIAL_SEC:  # มีเสียงพอตัว → transcribe
-                        logger.info(f"📊 Audio buffer: {now:.2f}s, {total_bytes_received} bytes, {audio_chunk_count} chunks")
-                        logger.info(f"🎙️ Transcribing audio ({len(pcm_buf.take_all())} bytes)...")
-                        text = await transcribe_with_vad(pcm_buf.take_all(), session_lang)
+                    # Debounce: ไม่ส่ง final ถี่กว่า DEBOUNCE_SEC
+                    time_since_last_final = current_time - last_final_time
+                    
+                    if now > MIN_PARTIAL_SEC and time_since_last_final >= DEBOUNCE_SEC:
+                        # ดึง audio ออกมาก่อน transcribe (เรียกแค่ครั้งเดียว)
+                        audio_data = pcm_buf.take_all()
+                        logger.info(f"📊 Audio buffer: {now:.2f}s, {len(audio_data)} bytes, {audio_chunk_count} chunks")
+                        
+                        # Measure transcription time
+                        transcribe_start = time.time()
+                        logger.info(f"🎙️ Starting Whisper transcription...")
+                        text = await transcribe_with_vad(audio_data, session_lang)
+                        transcribe_time = time.time() - transcribe_start
+                        logger.info(f"⏱️ Whisper took {transcribe_time:.2f}s to transcribe {now:.2f}s audio")
                         if text:
                             logger.info(f"✅ FINAL: {text}")
                             # ส่งแค่ครั้งเดียว (frontend รองรับทั้ง final และ transcript)
                             await ws.send_json({"type": "final", "text": text})
+                            last_final_time = current_time  # Update debounce timer
                         else:
                             logger.warning("⚠️ No text detected (might be hallucination or silence)")
                         
@@ -262,6 +278,9 @@ async def ws_stt(ws: WebSocket):
                         last_emit_time = 0
                         audio_chunk_count = 0
                         total_bytes_received = 0
+                    elif now > MIN_PARTIAL_SEC and time_since_last_final < DEBOUNCE_SEC:
+                        # Debounce active - รอก่อน แต่ยังสะสม buffer ไว้
+                        logger.debug(f"⏳ Debounce ({time_since_last_final:.1f}s/{DEBOUNCE_SEC}s), keeping buffer...")
                     else:
                         # Audio สั้นเกินไป → reset แค่ silence_counter ให้สะสมต่อ
                         logger.debug(f"⏳ Audio short ({now:.2f}s), waiting for more...")

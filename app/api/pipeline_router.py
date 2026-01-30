@@ -13,14 +13,21 @@ import json
 import asyncio
 
 from ..core.vora_pipeline import (
-    process_command, 
+    process_command,
+    process_with_accumulator,
     parse_command, 
     create_task_plan,
     analyze_vision,
     get_quick_command,
     PipelineResult,
     RobotCommand,
-    Intent
+    Intent,
+    text_accumulator
+)
+from ..core.text_preprocessor import preprocess, TextStatus
+from ..core.vora_memory import (
+    get_memory, clear_memory, clear_all_memories, get_all_sessions,
+    match_quick_response, VORA_IDENTITY
 )
 
 router = APIRouter(prefix="/pipeline", tags=["VORA Pipeline"])
@@ -56,7 +63,44 @@ class VisionRequest(BaseModel):
     target_object: str = Field(..., description="สิ่งของที่ต้องการหา")
 
 
+class PreprocessRequest(BaseModel):
+    text: str = Field(..., description="ข้อความที่ต้องการ preprocess")
+
+
+class PreprocessResponse(BaseModel):
+    status: str
+    original: str
+    cleaned: str
+    corrections: List[str]
+    should_process: bool
+    quick_response: Optional[str] = None
+
+
 # ============ Endpoints ============
+
+@router.post("/preprocess", response_model=PreprocessResponse)
+async def preprocess_text(req: PreprocessRequest):
+    """
+    📝 Preprocess: Clean และ validate text ก่อนส่ง LLM
+    
+    ใช้สำหรับ:
+    - กรอง filler words (เอ่อ, ครับ, คือ)
+    - แก้ไข STT errors (ปลากา → เทปกาว)
+    - ตรวจสอบว่าควรส่ง LLM หรือไม่
+    """
+    logger.info(f"📝 Preprocess: '{req.text}'")
+    
+    result = preprocess(req.text)
+    
+    return PreprocessResponse(
+        status=result.status.value,
+        original=result.original,
+        cleaned=result.cleaned,
+        corrections=result.corrections,
+        should_process=result.should_process,
+        quick_response=result.quick_response
+    )
+
 
 @router.post("/command", response_model=CommandResponse)
 async def process_voice_command(req: CommandRequest):
@@ -64,23 +108,58 @@ async def process_voice_command(req: CommandRequest):
     🎯 Main Endpoint: รับคำสั่งเสียง → ประมวลผล → ส่งคำสั่งหุ่นยนต์
     
     Flow:
+    0. Preprocess (clean, correct, validate)
     1. Agent (12b) parse คำสั่ง
     2. Reasoning (27b) วางแผน
     3. VLM (e4b) วิเคราะห์ภาพ (ถ้าจำเป็น)
     4. สร้าง Robot Commands
     """
-    logger.info(f"📨 Command received: {req.text[:50]}...")
+    logger.info(f"📨 Command received: '{req.text}'")
     
     try:
-        # ตรวจสอบ quick command ก่อน (เร็วกว่า)
-        quick_cmd = get_quick_command(req.text)
+        # Step 0: Preprocess first
+        preproc = preprocess(req.text)
+        logger.info(f"📋 Preprocess: status={preproc.status.value}, should_process={preproc.should_process}")
+        
+        # If quick response available (greeting, thanks)
+        if preproc.quick_response:
+            logger.info(f"⚡ Quick response: '{preproc.quick_response}'")
+            return CommandResponse(
+                success=True,
+                intent="chitchat",
+                clean_text=preproc.cleaned,
+                response_text=preproc.quick_response,
+                commands=[{
+                    "cmd": "speak",
+                    "params": {"text": preproc.quick_response},
+                    "priority": 0
+                }]
+            )
+        
+        # If should not process (filler, too short, incomplete)
+        if not preproc.should_process:
+            logger.info(f"⏭️ Skipping: {preproc.status.value}")
+            return CommandResponse(
+                success=True,
+                intent="skip",
+                clean_text=preproc.cleaned,
+                response_text="",  # ไม่ตอบอะไร
+                commands=[]
+            )
+        
+        # Use cleaned text
+        cleaned_text = preproc.cleaned
+        logger.info(f"✅ Using cleaned: '{cleaned_text}'")
+        
+        # ตรวจสอบ quick command (หยุด, เดินหน้า, etc.)
+        quick_cmd = get_quick_command(cleaned_text)
         if quick_cmd:
             logger.info(f"⚡ Quick command detected: {quick_cmd.cmd}")
             return CommandResponse(
                 success=True,
                 intent="control",
-                clean_text=req.text,
-                response_text=f"รับคำสั่ง{req.text}ครับ",
+                clean_text=cleaned_text,
+                response_text=f"รับคำสั่ง{cleaned_text}ครับ",
                 commands=[{
                     "cmd": quick_cmd.cmd,
                     "params": quick_cmd.params,
@@ -88,11 +167,12 @@ async def process_voice_command(req: CommandRequest):
                 }]
             )
         
-        # Full pipeline
+        # Full pipeline (with skip_preprocess since already done)
         result = await process_command(
-            text=req.text,
+            text=cleaned_text,
             image_base64=req.image_base64,
-            session_id=req.session_id
+            session_id=req.session_id,
+            skip_preprocess=True
         )
         
         # แปลงผลลัพธ์
@@ -326,5 +406,52 @@ async def get_status():
             "vlm": "gemma3n:e4b"
         },
         "connected_robots": list(gateway_connections.keys()),
-        "robot_count": len(gateway_connections)
+        "robot_count": len(gateway_connections),
+        "active_sessions": get_all_sessions()
     }
+
+
+# ============ Memory Endpoints ============
+
+@router.get("/memory/{session_id}")
+async def get_session_memory(session_id: str):
+    """📝 ดึง conversation history ของ session"""
+    memory = get_memory(session_id)
+    return {
+        "session_id": session_id,
+        "stats": memory.get_stats(),
+        "history": [msg.to_dict() for msg in memory.get_history()],
+        "context": memory.get_context_string()
+    }
+
+
+@router.delete("/memory/{session_id}")
+async def clear_session_memory(session_id: str):
+    """🗑️ ล้าง memory ของ session"""
+    clear_memory(session_id)
+    return {
+        "success": True,
+        "message": f"Cleared memory for session: {session_id}"
+    }
+
+
+@router.delete("/memory")
+async def clear_all_session_memories():
+    """🗑️ ล้าง memory ทุก session"""
+    clear_all_memories()
+    return {
+        "success": True,
+        "message": "Cleared all session memories"
+    }
+
+
+@router.get("/identity")
+async def get_vora_identity():
+    """🤖 ดึงข้อมูล identity ของ VORA"""
+    return {
+        "name": "VORA",
+        "full_name": "Voice Oriented Robotics Assistant",
+        "thai_name": "โวร่า",
+        "identity": VORA_IDENTITY
+    }
+

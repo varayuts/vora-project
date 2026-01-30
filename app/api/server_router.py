@@ -50,6 +50,11 @@ class ModeChangeRequest(BaseModel):
     mode: str = Field(..., description="โหมด: standby, active, emergency, maintenance")
 
 
+class RobotCommandRequest(BaseModel):
+    robot_id: str = Field(..., description="Robot ID")
+    command: Dict[str, Any] = Field(..., description="Robot command (cmd, params)")
+
+
 # ============ TTS Endpoints ============
 
 @router.post("/tts/speak")
@@ -170,6 +175,39 @@ async def do_emergency_stop(target_robot: Optional[str] = None):
         "message": "Emergency stop activated",
         "command_id": cmd_id
     }
+
+
+@router.post("/robot-command")
+async def send_robot_command(req: RobotCommandRequest):
+    """
+    🤖 ส่งคำสั่งไปยัง Robot ผ่าน Gateway
+    """
+    from ..api.pipeline_router import send_to_robot
+    from ..schemas.agent import RobotCommand
+    
+    logger.info(f"📤 Sending command to {req.robot_id}: {req.command}")
+    
+    # สร้าง RobotCommand object
+    robot_cmd = RobotCommand(
+        cmd=req.command.get("cmd"),
+        params=req.command.get("params", {}),
+        priority=req.command.get("priority", 2)
+    )
+    
+    # ส่งไป Robot
+    success = await send_to_robot(req.robot_id, robot_cmd)
+    
+    if success:
+        return {
+            "success": True,
+            "message": f"Command sent to {req.robot_id}",
+            "command": req.command
+        }
+    else:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Robot {req.robot_id} not connected"
+        )
 
 
 # ============ Session Endpoints ============

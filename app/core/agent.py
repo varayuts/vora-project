@@ -4,7 +4,6 @@ import logging
 from typing import Tuple, List, Optional
 
 from ..providers.llm.ollama import OllamaProvider
-from ..providers.search.searxng import SearxNGProvider
 from ..schemas.agent import RefineResult
 from ..core.settings import settings
 from .memory import MEMORY
@@ -16,7 +15,6 @@ logger = logging.getLogger(__name__)
 LLM_REFINE = OllamaProvider(model=settings.OLLAMA_REFINE_MODEL or "gemma3:12b-it-qat")
 # gemma3:27b-it-qat = Main Reasoning (complex tasks)
 LLM_ANSWER = OllamaProvider(model=settings.OLLAMA_MODEL)
-SEARCH = SearxNGProvider()
 
 LAB_CONTEXT = """
 ข้อมูลพื้นที่ห้องแล็บ VORA:
@@ -27,13 +25,21 @@ LAB_CONTEXT = """
 # บังคับให้ Schema ให้ตรงกับที่ Frontend รอรับ
 REFINE_SYSTEM = (
     "คุณคือระบบวิเคราะห์คำสั่งเสียงสำหรับหุ่นยนต์ VORA\n"
-    "หน้าที่: แก้ไขคำผิดและวิเคราะห์ Intent คืนค่าเป็น JSON เท่านั้น\n"
+    "หน้าที่: แก้ไขคำผิดและวิเคราะห์ Intent คืนค่าเป็น JSON เท่านั้น\n\n"
+    "🔴 หลักการสำคัญ:\n"
+    "1. อ่านประโยคทั้งหมด ไม่ใช่แค่คำแรก\n"
+    "2. ถ้าพบคำสั่งควบคุม (หมุน/เลี้ยว/หัน/เดิน/ถอย) → intent = 'control'\n"
+    "3. คำทักทาย (ฮัลโหล/สวัสดี/วอร่า) ที่อยู่หน้าคำสั่ง → ตัดออก ใช้ intent ของคำสั่งหลัก\n\n"
+    "ตัวอย่าง:\n"
+    "- 'ฮัลโหล วอร่า หมุนซ้าย' → intent='control', clean_text='หมุนซ้าย'\n"
+    "- 'สวัสดีครับ ช่วยหั่นขวา' → intent='control', clean_text='หันขวา'\n"
+    "- 'หมุนรอบตัว' → intent='control'\n"
+    "- 'สวัสดี' → intent='chitchat'\n\n"
     "SCHEMA:\n"
     "{\n"
-    '  "intent": "navigate|find_object|chitchat|info",\n'
-    '  "clean_text": "ข้อความที่แก้คำผิดแล้ว",\n'
-    '  "target": "สถานที่หรือสิ่งของที่ระบุ (ถ้าไม่มีให้ใส่ว่าง)",\n'
-    '  "must_search": false\n'
+    '  "intent": "control|navigate|find_object|chitchat|info",\n'
+    '  "clean_text": "ข้อความที่แก้คำผิดแล้ว (ตัดคำทักทายออก)",\n'
+    '  "target": "สถานที่หรือสิ่งของที่ระบุ (ถ้าไม่มีให้ใส่ว่าง)"\n'
     "}\n"
     "- ห้ามตอบข้อความอื่นนอกจาก JSON"
 )
@@ -41,9 +47,27 @@ REFINE_SYSTEM = (
 _TH_FIX = {
     "หมาสมุด": "ห้องสมุด",
     "วอร่า": "VORA",
+    "วัวร่า": "VORA",
+    "โวล่า": "VORA",
+    "โวร่า": "VORA", 
+    "โบล่า": "VORA",
+    "หั่น": "หัน",
+    "เหลว": "เลี้ยว",
+    "ขวาย": "ขวา",
     "ไปที่โต๊ะ": "ไปที่โต๊ะทำงาน",
     "หาไขควง": "หาไขควงในตู้เก็บของ"
 }
+
+# คำสั่งควบคุมที่ต้องจับเป็น control (regex pre-filter)
+CONTROL_KEYWORDS = re.compile(
+    r"(หยุด|พอ|stop|"
+    r"เดิน|เดิง|เทิน|ไป|ขยับ|move|forward|"
+    r"ถอย|หลัง|backward|"
+    r"หมุน|เลี้ยว|หัน|หั่น|turn|rotate|"
+    r"ซ้าย|ขวา|left|right|"
+    r"รอบ.*ตัว|ตัว.*รอบ|360)",
+    re.IGNORECASE
+)
 
 def _clean_gemma_output(text: str) -> str:
     """ลบขยะและแท็กที่มักหลุดมาจาก Gemma 3"""
@@ -62,6 +86,10 @@ def _normalize_typos(s: str) -> str:
 
 def refine(text: str, lang_hint: str = "th") -> RefineResult:
     text = _normalize_typos(text)
+    
+    # 🔴 PRE-FILTER: ถ้าเจอคำสั่งควบคุม → บังคับเป็น control ทันที
+    has_control_keyword = CONTROL_KEYWORDS.search(text)
+    
     try:
         data = LLM_REFINE.generate_json(
             system=REFINE_SYSTEM,
@@ -77,6 +105,13 @@ def refine(text: str, lang_hint: str = "th") -> RefineResult:
     clean_text = _clean_gemma_output(data.get("clean_text", text))
     intent = data.get("intent", "chitchat")
     target = data.get("target", "")
+    
+    # 🔴 OVERRIDE: ถ้า regex เจอคำสั่งควบคุม แต่ LLM บอก chitchat → แก้เป็น control
+    if has_control_keyword and intent == "chitchat":
+        logger.info(f"🔄 Override intent: chitchat → control (detected: {text})")
+        intent = "control"
+        # ลบคำทักทายออก
+        clean_text = re.sub(r"(ฮัลโหล|สวัสดี|หวัดดี|ดีจ้า|ครับ|ค่ะ|วอร่า|โวร่า|โวล่า|โบล่า|วัวร่า)\s*", "", clean_text, flags=re.IGNORECASE).strip()
 
     return RefineResult(
         language=data.get("language", lang_hint),
@@ -94,8 +129,6 @@ def refine(text: str, lang_hint: str = "th") -> RefineResult:
 
 def answer(
     refine_res: RefineResult,
-    search_when: str = "never",
-    topk: int = 3,
     session_id: str | None = None,
 ) -> Tuple[str, list]:
     
@@ -123,29 +156,12 @@ def answer(
     # --- Case 2: Information / General Chitchat ---
     system = "คุณคือ VORA ผู้ช่วยประจำแล็บ ตอบอย่างกระชับ ฉลาด และเป็นทางการ"
     
-    # เช็คเงื่อนไขการค้นเว็บ
-    if search_when != "never" and refine_res.must_search:
-        reply, sources = web_synth_answer(refine_res.clean_text, memory_block=memory_ctx)
-    else:
-        prompt = f"บริบท:\n{memory_ctx}\nคำถาม: {refine_res.clean_text}"
-        reply = LLM_ANSWER.generate(prompt=prompt, system=system, temperature=0.4, max_tokens=350)
-        sources = []
+    prompt = f"บริบท:\n{memory_ctx}\nคำถาม: {refine_res.clean_text}"
+    reply = LLM_ANSWER.generate(prompt=prompt, system=system, temperature=0.4, max_tokens=350)
+    sources = []
 
     reply = _clean_gemma_output(reply)
     if not reply: reply = "ขออภัยครับ ผมยังไม่พบข้อมูลที่แน่ชัดในขณะนี้"
 
     if session_id: MEMORY.add(session_id, "assistant", reply)
     return reply, sources
-
-def web_synth_answer(question: str, memory_block: str = "", topk: int = 3) -> tuple[str, list]:
-    res = SEARCH.search(question, num=topk)
-    sources = [{"title": r.title, "url": r.url} for r in res] if res else []
-    
-    if not res:
-        return "ไม่พบข้อมูลจากเว็บครับ", []
-
-    context = "\n".join([f"- {r.title}: {r.snippet}" for r in res])
-    prompt = f"บริบทเว็บ:\n{context}\nสรุปคำถาม: {question}"
-    
-    reply = LLM_ANSWER.generate(prompt=prompt, system="สรุปสั้นๆ เป็นภาษาไทย", max_tokens=400)
-    return _clean_gemma_output(reply), sources

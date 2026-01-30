@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+websockets
+httpx
+python-dotenv
+roslibpy
+paho-mqtt
+sounddevice
+numpy

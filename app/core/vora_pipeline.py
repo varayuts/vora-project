@@ -22,8 +22,17 @@ from enum import Enum
 
 from ..providers.llm.ollama import OllamaProvider
 from ..core.settings import settings
+from ..core.text_preprocessor import preprocess, PreprocessResult, TextStatus, TextAccumulator
+from ..core.vora_memory import (
+    get_memory, clear_memory, match_quick_response,
+    build_prompt_with_memory, AGENT_SYSTEM_PROMPT, REASONING_SYSTEM_PROMPT,
+    VORA_IDENTITY
+)
 
 logger = logging.getLogger("vora.pipeline")
+
+# Global text accumulator
+text_accumulator = TextAccumulator(timeout_sec=3.0, max_fragments=5)
 
 # ============ Models ============
 LLM_AGENT = OllamaProvider(model=settings.OLLAMA_REFINE_MODEL or "gemma3:12b-it-qat")
@@ -97,58 +106,18 @@ class PipelineResult:
 LAB_OBJECTS = [
     "ไขควง", "กรรไกร", "กุญแจ", "คีม", "ยางลบ", 
     "สายไฟ", "ปลั๊กไฟ", "เทปกาว", "มัลติมิเตอร์",
-    "บอร์ด Arduino", "Raspberry Pi", "สาย USB", "หัวแร้ง"
+    "บอร์ด Arduino", "Raspberry Pi", "สาย USB", "หัวแร้ง", "ปากกา"
 ]
 
 LAB_LOCATIONS = [
     "โต๊ะทำงาน", "ตู้เก็บของ", "ประตูหน้า", "แท่นชาร์จ",
-    "มุมห้อง", "หน้าต่าง", "ชั้นวางของ"
+    "มุมห้อง", "หน้าต่าง", "ชั้นวางของ", "หน้าห้อง", "หลังห้อง"
 ]
 
 
-# ============ Agent Prompts ============
-AGENT_SYSTEM_PROMPT = f"""คุณคือ VORA Agent - ระบบวิเคราะห์คำสั่งเสียงสำหรับหุ่นยนต์
-
-**หน้าที่:** แยกประเภทคำสั่งและดึงข้อมูลสำคัญ
-
-**ประเภทคำสั่ง (intent):**
-- find_object: หาสิ่งของ (เช่น "หาไขควง", "ช่วยหากุญแจ")
-- navigate: ไปยังสถานที่ (เช่น "ไปที่โต๊ะ", "กลับแท่นชาร์จ")
-- control: สั่งการหุ่นยนต์โดยตรง (เช่น "หยุด", "หมุนซ้าย", "เดินหน้า")
-- question: ถามเกี่ยวกับสิ่งที่เห็น (เช่น "นี่คืออะไร", "เห็นอะไรบ้าง")
-- chitchat: สนทนาทั่วไป
-
-**สิ่งของในห้องแล็บ:** {", ".join(LAB_OBJECTS)}
-**สถานที่:** {", ".join(LAB_LOCATIONS)}
-
-**ตอบเป็น JSON เท่านั้น:**
-{{
-  "intent": "find_object|navigate|control|question|chitchat",
-  "clean_text": "ข้อความที่แก้คำผิดแล้ว",
-  "target_object": "ชื่อสิ่งของ (ถ้ามี)",
-  "target_location": "ชื่อสถานที่ (ถ้ามี)",
-  "action": "stop|forward|backward|left|right (สำหรับ control)",
-  "confidence": 0.0-1.0
-}}"""
-
-REASONING_SYSTEM_PROMPT = """คุณคือ VORA Brain - ระบบวางแผนการทำงานของหุ่นยนต์
-
-**หน้าที่:** รับคำสั่งที่ parsed แล้ว และวางแผนขั้นตอนการทำงาน
-
-**ตอบเป็น JSON:**
-{
-  "steps": [
-    {"action": "speak", "text": "ข้อความที่พูด"},
-    {"action": "search", "target": "ชื่อของ"},
-    {"action": "navigate", "target": "สถานที่"},
-    {"action": "move", "distance": 1.0, "direction": "forward"},
-    {"action": "rotate", "angle": 90}
-  ],
-  "need_vision": true/false,
-  "need_navigation": true/false,
-  "speech_response": "ประโยคตอบกลับผู้ใช้",
-  "estimated_time_sec": 10
-}"""
+# ============ Agent Prompts (imported from vora_memory) ============
+# AGENT_SYSTEM_PROMPT และ REASONING_SYSTEM_PROMPT 
+# import จาก vora_memory.py แล้ว
 
 VLM_SYSTEM_PROMPT = """คุณคือ VORA Vision - ระบบมองเห็นของหุ่นยนต์
 
@@ -209,21 +178,34 @@ async def parse_command(text: str) -> ParsedCommand:
         )
 
 
-async def create_task_plan(parsed: ParsedCommand) -> TaskPlan:
+async def create_task_plan(parsed: ParsedCommand, history_context: str = "") -> TaskPlan:
     """
     Step 2: Reasoning (27b) - วางแผนการทำงาน
+    
+    Args:
+        parsed: ParsedCommand จาก Agent
+        history_context: ประวัติการสนทนา (optional)
     """
     logger.info(f"🧠 Reasoning for: {parsed.intent}")
     
     try:
-        prompt = f"""คำสั่งที่ parse แล้ว:
+        # Build prompt with history context
+        prompt_parts = []
+        
+        if history_context:
+            prompt_parts.append(history_context)
+            prompt_parts.append("")
+        
+        prompt_parts.append(f"""คำสั่งที่ parse แล้ว:
 - Intent: {parsed.intent.value}
 - Clean text: {parsed.clean_text}
 - Target object: {parsed.target_object or 'ไม่ระบุ'}
 - Target location: {parsed.target_location or 'ไม่ระบุ'}
 - Action: {parsed.action or 'ไม่ระบุ'}
 
-วางแผนการทำงาน:"""
+วางแผนการทำงาน:""")
+        
+        prompt = "\n".join(prompt_parts)
 
         result = LLM_REASONING.generate_json(
             system=REASONING_SYSTEM_PROMPT,
@@ -354,14 +336,82 @@ def plan_to_commands(plan: TaskPlan, vision: Optional[VisionResult] = None) -> L
 async def process_command(
     text: str,
     image_base64: Optional[str] = None,
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    skip_preprocess: bool = False
 ) -> PipelineResult:
     """
     Main Pipeline: รันทุกขั้นตอน
+    
+    Args:
+        text: คำสั่งจาก STT
+        image_base64: ภาพ (optional)
+        session_id: session ID
+        skip_preprocess: ข้าม preprocessing (สำหรับ text ที่ clean แล้ว)
     """
-    logger.info(f"🚀 Pipeline start: {text[:50]}...")
+    logger.info(f"🚀 Pipeline start: '{text[:50]}...'")
     
     try:
+        # Step 0: Preprocess text (ถ้าไม่ skip)
+        if not skip_preprocess:
+            preproc = preprocess(text)
+            logger.info(f"📋 Preprocess: status={preproc.status.value}, cleaned='{preproc.cleaned}'")
+            
+            # Handle quick response (greetings, thanks, etc.)
+            if preproc.quick_response:
+                logger.info(f"⚡ Quick response: '{preproc.quick_response}'")
+                return PipelineResult(
+                    success=True,
+                    parsed=ParsedCommand(
+                        intent=Intent.CHITCHAT,
+                        clean_text=preproc.cleaned,
+                        raw_text=text,
+                        confidence=1.0
+                    ),
+                    commands=[RobotCommand(cmd="speak", params={"text": preproc.quick_response})],
+                    response_text=preproc.quick_response
+                )
+            
+            # Skip if not processable
+            if not preproc.should_process:
+                logger.info(f"⏭️ Skipping: {preproc.status.value}")
+                return PipelineResult(
+                    success=True,
+                    parsed=ParsedCommand(
+                        intent=Intent.UNKNOWN,
+                        clean_text=preproc.cleaned or text,
+                        raw_text=text,
+                        confidence=0.0
+                    ),
+                    response_text="",  # ไม่ตอบอะไร
+                    commands=[]
+                )
+            
+            # Use cleaned text
+            text = preproc.cleaned
+            logger.info(f"✅ Using cleaned text: '{text}'")
+        
+        # Step 0.5: Check quick response from memory (ชื่ออะไร, ทำอะไรได้, etc.)
+        quick_resp = match_quick_response(text)
+        if quick_resp:
+            logger.info(f"⚡ Quick response matched: '{quick_resp[:30]}...'")
+            
+            # Save to memory
+            memory = get_memory(session_id or "default")
+            memory.add_user_message(text, intent="question")
+            memory.add_assistant_message(quick_resp, intent="question")
+            
+            return PipelineResult(
+                success=True,
+                parsed=ParsedCommand(
+                    intent=Intent.CHITCHAT,
+                    clean_text=text,
+                    raw_text=text,
+                    confidence=1.0
+                ),
+                commands=[RobotCommand(cmd="speak", params={"text": quick_resp})],
+                response_text=quick_resp
+            )
+        
         # Step 1: Parse command
         parsed = await parse_command(text)
         
@@ -373,8 +423,10 @@ async def process_command(
                 error="Unknown intent"
             )
         
-        # Step 2: Create plan
-        plan = await create_task_plan(parsed)
+        # Step 2: Create plan (with memory context)
+        memory = get_memory(session_id or "default")
+        history_context = memory.get_context_string(last_n=3)
+        plan = await create_task_plan(parsed, history_context)
         
         # Step 3: Vision (if needed and image provided)
         vision = None
@@ -390,6 +442,10 @@ async def process_command(
             response_text = f"เจอ{vision.object_name}แล้วครับ! {vision.description}"
         elif vision and not vision.object_found:
             response_text = f"ยังไม่เจอ{parsed.target_object}ครับ กำลังค้นหาต่อ..."
+        
+        # Step 5: Save to memory
+        memory.add_user_message(text, intent=parsed.intent.value)
+        memory.add_assistant_message(response_text, intent=parsed.intent.value)
         
         return PipelineResult(
             success=True,
@@ -407,6 +463,51 @@ async def process_command(
             error=str(e),
             response_text="เกิดข้อผิดพลาดในระบบครับ"
         )
+
+
+async def process_with_accumulator(
+    text: str,
+    image_base64: Optional[str] = None,
+    session_id: Optional[str] = None
+) -> Optional[PipelineResult]:
+    """
+    Process text พร้อม accumulator สำหรับ incomplete sentences
+    
+    Returns:
+        PipelineResult ถ้าพร้อม process, None ถ้ายังรอ text เพิ่ม
+    """
+    global text_accumulator
+    
+    preproc_result = text_accumulator.add(text)
+    
+    if preproc_result is None:
+        logger.info(f"⏳ Waiting for more text... buffer={text_accumulator.buffer}")
+        return None
+    
+    # Quick response
+    if preproc_result.quick_response:
+        return PipelineResult(
+            success=True,
+            parsed=ParsedCommand(
+                intent=Intent.CHITCHAT,
+                clean_text=preproc_result.cleaned,
+                raw_text=preproc_result.original,
+                confidence=1.0
+            ),
+            commands=[RobotCommand(cmd="speak", params={"text": preproc_result.quick_response})],
+            response_text=preproc_result.quick_response
+        )
+    
+    # Process cleaned text
+    if preproc_result.should_process:
+        return await process_command(
+            preproc_result.cleaned,
+            image_base64=image_base64,
+            session_id=session_id,
+            skip_preprocess=True  # Already preprocessed
+        )
+    
+    return None
 
 
 # ============ Quick Commands ============

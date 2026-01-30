@@ -16,7 +16,7 @@ class Settings:
     # VLM for Vision tasks (navigation, object finding)
     OLLAMA_VLM_MODEL: str = os.getenv("OLLAMA_VLM_MODEL", "gemma3n:e4b")
     
-    SEARXNG_URL: str = os.getenv("SEARXNG_URL", "http://127.0.0.1:8080")
+    # Search: DISABLED - จะใช้ RAG แทนในอนาคต
 
     # LLM performance
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "600"))
@@ -27,5 +27,8 @@ class Settings:
     MEMORY_TTL_MIN: int = int(os.getenv("MEMORY_TTL_MIN", "60"))           # หมดอายุหลังไม่ถูกแตะเป็น X นาที
     MEMORY_MAX_TURNS: int = int(os.getenv("MEMORY_MAX_TURNS", "12"))       # เก็บล่าสุดกี่ข้อความ (รวม user+assistant)
     MEMORY_MAX_CHARS: int = int(os.getenv("MEMORY_MAX_CHARS", "4000"))     # จำกัดความยาว context ที่ส่งเข้า LLM
+    
+    # TTS Configuration
+    TTS_BACKEND: str = os.getenv("TTS_BACKEND", "gtts")  # gtts (default), พibper, typhoon2 disabled
 
 settings = Settings()

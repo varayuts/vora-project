@@ -1,0 +1,234 @@
+# 🖥️ AI PROMPT - VORA SERVER (A6000)
+
+**Platform:** A6000 GPU Server (Linux)  
+**Role:** Main AI Server (STT + LLM)  
+**Access:** SSH หรือ Local terminal  
+**Date:** 30 มกราคม 2026
+
+---
+
+## 🎯 CURRENT STATUS
+
+### ✅ Working:
+- VORA Server running on Tailscale: https://user.tail87d9fe.ts.net
+- Faster-Whisper STT (Thai) - GPU accelerated
+- Gemma3 LLM via Ollama
+- WebSocket endpoint: wss://user.tail87d9fe.ts.net/ws/stt
+- Health endpoint: https://user.tail87d9fe.ts.net/health
+
+### ⚠️ Issues:
+- **HIGH LATENCY**: STT processing ช้า (5-10 วินาที)
+- STT accuracy ต้องปรับปรุง (แปลผิดบางครั้ง)
+- Audio buffering ทำให้ delay สูง
+
+---
+
+## 📁 KEY FILES
+
+```
+/home/user/vora_project/VORA/VORA/
+├── start_tailscale.sh         # Start script
+├── app/
+│   ├── main.py                # FastAPI main server
+│   ├── api/
+│   │   ├── stt_ws.py          # ⚠️ STT WebSocket (ปัญหา latency)
+│   │   ├── pipeline_router.py # LLM pipeline
+│   │   └── plan_router.py     # Motion planner (404?)
+│   ├── core/
+│   │   ├── vora_pipeline.py   # LLM agent
+│   │   └── settings.py        # Configuration
+│   ├── providers/
+│   │   └── llm/
+│   │       └── ollama.py      # Ollama integration
+│   └── services/
+│       └── thai_tts.py        # gTTS only
+└── vora_env/                  # Python venv
+```
+
+---
+
+## 🔧 STARTUP COMMANDS
+
+```bash
+# Method 1: Tailscale Mode (Production)
+cd /home/user/vora_project/VORA/VORA
+./start_tailscale.sh
+
+# Method 2: Dev Mode (Local HTTP)
+./start_dev.sh
+
+# Check server status
+curl https://user.tail87d9fe.ts.net/health
+# Expected: {"status":"ok"}
+
+# Check logs
+tail -f /tmp/vora_api.log
+
+# Stop server
+pkill -f "uvicorn app.main:app"
+```
+
+---
+
+## 🎯 PROBLEMS TO FIX
+
+### 🔴 Priority 1: STT High Latency
+
+**Symptom:**
+- พูดเสร็จแล้ว → รอ 5-10 วินาที → แปลออกมา
+- Gateway ส่ง audio มา → Server ช้าในการ process
+
+**Where to Check:**
+- `app/api/stt_ws.py` - WebSocket endpoint
+- Faster-Whisper model configuration
+- FFmpeg audio pipeline
+- Audio buffer size
+
+**Diagnostic Commands:**
+```bash
+# Check GPU usage during STT
+nvidia-smi -l 1
+
+# Monitor WebSocket connections
+ss -tuln | grep 8080
+
+# Check model loading time
+# (ใน code: faster_whisper.transcribe_audio(...))
+
+# Test with smaller audio chunk
+# Current: 3200 bytes (100ms @ 16kHz)
+```
+
+**Potential Solutions:**
+1. Reduce audio buffer size (ลด latency แต่อาจเพิ่ม CPU usage)
+2. Use streaming transcription (real-time instead of batch)
+3. Optimize VAD (Voice Activity Detection) settings
+4. Add early-stop on silence detection
+
+
+### 🟡 Priority 2: STT Accuracy
+
+**Issues:**
+- "วัวล่า" → "วัวหน้า" (บางครั้ง)
+- Background noise ทำให้แปลผิด
+
+**Solutions:**
+1. Fine-tune VAD threshold
+2. Add noise reduction filter
+3. Test different Whisper model size (large-v3 vs medium)
+
+
+### 🟢 Priority 3: LLM Planner Endpoint
+
+**Issue:**
+```
+Gateway → POST /plan/plan_from_text → 404 Not Found
+```
+
+**Check:**
+- `app/api/plan_router.py` - Does endpoint exist?
+- Is it registered in `app/main.py`?
+- Gateway expects: `/plan/plan_from_text`
+
+
+---
+
+## 🧪 TESTING
+
+### Test STT Latency:
+```bash
+# From Gateway machine:
+# Record timestamp when speak → when transcript returns
+
+# Monitor server logs:
+tail -f /tmp/vora_api.log | grep -E "transcribe|stt_ws"
+
+# Check processing time in code
+# Add logging in stt_ws.py:
+# logger.info(f"Transcription took {elapsed_time:.2f}s")
+```
+
+### Test STT Accuracy:
+```bash
+# Test phrases:
+# - "วัวล่า ไปข้างหน้า"
+# - "ฮัลโหลล่า เลี้ยวซ้าย"
+# - "โวร่า หยุด"
+
+# Compare expected vs actual transcript
+```
+
+---
+
+## 📊 PERFORMANCE TARGETS
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| STT Latency | 5-10s | < 1s |
+| Transcription Accuracy | ~85%? | > 95% |
+| GPU Memory | ? | < 8GB |
+| Response Time (full) | ~10s | < 2s |
+
+---
+
+## 🔍 KEY VARIABLES TO CHECK
+
+**In `app/api/stt_ws.py`:**
+```python
+# Audio settings
+SAMPLE_RATE = 16000  # Don't change (matches ReSpeaker)
+CHUNK_SIZE = ?       # Current buffer size
+VAD_THRESHOLD = ?    # Voice activity detection
+SILENCE_DURATION = ? # How long before considering "done"
+
+# Whisper settings
+model_size = "large-v3"  # Could try "medium" for speed
+compute_type = "float16" # GPU optimization
+beam_size = ?            # Affects accuracy vs speed
+```
+
+---
+
+## 💡 TIPS FOR THIS SESSION
+
+1. **Focus on stt_ws.py first** - This is where latency happens
+2. **Add timestamps** to log every step (receive → process → send)
+3. **Test incrementally** - One change at a time
+4. **Monitor GPU** - nvidia-smi during processing
+5. **Compare with Mobile webapp** - It has lower latency, why?
+
+---
+
+## 🚨 DON'T BREAK
+
+- Tailscale configuration (working)
+- WebSocket endpoint structure (Gateway depends on it)
+- Audio format (16kHz mono) - Gateway/MyAGV expects this
+- Health check endpoint - deployment scripts use this
+
+---
+
+## 📝 NEXT STEPS
+
+[ ] 1. Add detailed logging to stt_ws.py (timestamp each step)
+[ ] 2. Measure current latency breakdown:
+       - Network receive: ?ms
+       - Whisper processing: ?ms
+       - Response send: ?ms
+[ ] 3. Test smaller buffer size
+[ ] 4. Test streaming mode instead of batch
+[ ] 5. Optimize VAD settings
+[ ] 6. Document findings → Share with Gateway/MyAGV sessions
+
+---
+
+## 🔗 RELATED
+
+- Gateway prompt: AI_PROMPT_GATEWAY.txt
+- MyAGV prompt: AI_PROMPT_MYAGV.txt
+- Progress: PROGRESS_30JAN2026.txt
+- Deployment: DEPLOYMENT_QUICK_START.md
+
+---
+
+**Ready to optimize STT latency!** 🚀

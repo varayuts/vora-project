@@ -1,0 +1,152 @@
+import os, asyncio, time, json
+from typing import Dict, Any, List
+import roslibpy
+from gateway.waypoint import pose_stamped
+
+USE_MQTT = os.getenv("USE_MQTT", "0") == "1"
+MQTT_BROKER = os.getenv("MQTT_BROKER", "127.0.0.1")
+MQTT_TOPIC = os.getenv("MQTT_TOPIC", "myagv/cmd_vel")
+USE_ACTION = os.getenv("USE_ACTION", "0") == "1"
+GOAL_FRAME = os.getenv("GOAL_FRAME", "map")
+
+class MotionPublisher:
+    def __init__(self, rosbridge_url: str, cmd_vel_topic: str):
+        self.rosbridge_url = rosbridge_url
+        self.cmd_vel_topic = cmd_vel_topic
+        self._ros = None
+        self._topic = None
+        self._mqtt = None
+        if USE_MQTT:
+            try:
+                import paho.mqtt.client as mqtt
+                self._mqtt = mqtt.Client()
+                self._mqtt.connect(MQTT_BROKER, 1883, 60)
+                self._mqtt.loop_start()
+            except Exception as e:
+                print("MQTT init failed:", e)
+
+    async def _ensure_ros(self):
+        if self._ros and self._ros.is_connected:
+            return
+        host_port = self.rosbridge_url.replace("ws://","").split("/")[0]
+        host, port = host_port.split(":")
+        self._ros = roslibpy.Ros(host=host, port=int(port))
+        self._ros.run()
+        for _ in range(50):
+            if self._ros.is_connected:
+                break
+            await asyncio.sleep(0.1)
+        if not self._ros.is_connected:
+            raise RuntimeError("Cannot connect to rosbridge")
+        self._topic = roslibpy.Topic(self._ros, self.cmd_vel_topic, "geometry_msgs/Twist")
+
+    def _twist(self, lx, az):
+        return {"linear": {"x": lx, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": az}}
+
+    async def send_to_command_executor(self, intent: str, query_id: str = None):
+        """Send command to /vora/command topic for Command Executor to handle"""
+        await self._ensure_ros()
+        
+        if query_id is None:
+            import uuid
+            query_id = str(uuid.uuid4())[:8]
+        
+        vora_topic = roslibpy.Topic(self._ros, "/vora/command", "std_msgs/String")
+        command_json = json.dumps({
+            "intent": intent,
+            "query_id": query_id
+        })
+        message = {"data": command_json}
+        vora_topic.publish(roslibpy.Message(message))
+        print(f"✅ Sent to /vora/command: {command_json}")
+        await asyncio.sleep(0.5)  # Wait for command to be processed
+
+    async def exec_motion(self, cmd: Dict[str, Any]):
+        # NEW: Send to Command Executor instead of direct /cmd_vel
+        if cmd.get("type") == "stop":
+            await self.send_to_command_executor("stop")
+            return
+        
+        # For now, other motions still use direct /cmd_vel
+        # TODO: Implement forward/backward/turn in command_executor
+        if cmd.get("type") == "move":
+            lx = float(cmd.get("linear_x", 0.0))
+            az = float(cmd.get("angular_z", 0.0))
+            duration = max(0.0, float(cmd.get("duration", 0.0)))
+            
+            print(f"🎯 Motion detected: linear_x={lx:.2f}, angular_z={az:.2f}, duration={duration:.2f}s")
+            
+            if USE_MQTT and self._mqtt:
+                self._mqtt.publish(MQTT_TOPIC, json.dumps({"lx": lx, "az": az, "duration": duration}), qos=0, retain=False)
+                return True
+            
+            await self._ensure_ros()
+            
+            # ✅ FIX: Use loop count instead of time check for more reliable execution
+            # Publish at 10Hz (every 0.1s) for the full duration
+            loop_count = int(duration / 0.1)
+            print(f"📡 Publishing {loop_count} messages at 10Hz for {duration}s")
+            
+            for i in range(loop_count):
+                self._topic.publish(self._twist(lx, az))
+                await asyncio.sleep(0.1)
+            
+            # Stop command
+            self._topic.publish(self._twist(0.0, 0.0))
+            print(f"✅ Motion completed: {loop_count} messages sent")
+            return True
+        return False
+
+    async def stop(self):
+        if USE_MQTT and self._mqtt:
+            self._mqtt.publish(MQTT_TOPIC, json.dumps({"lx":0.0,"az":0.0,"duration":0}), qos=0, retain=False)
+            return True
+        await self._ensure_ros()
+        self._topic.publish(self._twist(0.0, 0.0))
+        return True
+
+class WaypointSender:
+    def __init__(self, ros: roslibpy.Ros = None, frame_id: str = GOAL_FRAME):
+        self._ros = ros
+        self.frame_id = frame_id
+        self._goal_topic = None
+        self._action_client = None
+
+    async def _ensure(self, ros: roslibpy.Ros):
+        if self._ros is None:
+            self._ros = ros
+
+    async def send_via_topic(self, ros: roslibpy.Ros, waypoints: List[Dict]):
+        await self._ensure(ros)
+        if self._goal_topic is None:
+            self._goal_topic = roslibpy.Topic(self._ros, "/move_base_simple/goal", "geometry_msgs/PoseStamped")
+        for wp in waypoints:
+            pose = pose_stamped(wp.get("x",0.0), wp.get("y",0.0), wp.get("theta",0.0), self.frame_id)
+            self._goal_topic.publish(pose)
+            await asyncio.sleep(0.5)
+
+    async def send_via_action(self, ros: roslibpy.Ros, waypoints: List[Dict]):
+        await self._ensure(ros)
+        from roslibpy.actionlib import ActionClient, Goal
+        if self._action_client is None:
+            self._action_client = ActionClient(self._ros, "/move_base", "move_base_msgs/MoveBaseAction")
+        for wp in waypoints:
+            pose = pose_stamped(wp.get("x",0.0), wp.get("y",0.0), wp.get("theta",0.0), self.frame_id)
+            goal = Goal(self._action_client, {"target_pose": pose})
+            goal.send()
+            goal.wait(60)
+            goal.cancel()
+            await asyncio.sleep(0.2)
+
+async def ensure_ros(rosbridge_url: str) -> roslibpy.Ros:
+    host_port = rosbridge_url.replace("ws://","").split("/")[0]
+    host, port = host_port.split(":")
+    ros = roslibpy.Ros(host=host, port=int(port))
+    ros.run()
+    for _ in range(50):
+        if ros.is_connected:
+            break
+        await asyncio.sleep(0.1)
+    if not ros.is_connected:
+        raise RuntimeError("Cannot connect to rosbridge")
+    return ros

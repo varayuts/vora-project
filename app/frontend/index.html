@@ -527,21 +527,17 @@
         <div id="chat-history">
             <div class="msg vora">ยินดีต้อนรับครับ! 👋<br>ผม <b>VORA</b> - Voice Oriented Robotics Assistant 🚀<br><br>
             <b>📱 วิธีใช้:</b><br>
-            1. กด 🎤 <b>Start</b> แล้วพูด<br>
-            2. หรือกดปุ่ม Quick Command ด้านล่าง<br><br>
-            <b>🔧 อุปกรณ์ Lab:</b> ไขควง, กรรไกร, กุญแจ, คีม, ยางลบ, สายไฟ, ปลั๊กไฟ, เทปกาว</div>
+            1. กด 🎤 <b>Start</b> แล้วพูดคำสั่ง<br>
+            2. หรือพิมพ์คำสั่งในช่องด้านล่าง แล้วกด Enter<br><br>
+            <b>🎮 ตัวอย่างคำสั่ง:</b> "ไปข้างหน้า", "เลี้ยวซ้าย", "หยุด", "หาไขควง"</div>
         </div>
         
-        <!-- Quick Commands for Lab IT Items -->
-        <div class="quick-commands" id="quick-commands">
-            <button class="quick-cmd" data-cmd="หาไขควง">🔧 ไขควง</button>
-            <button class="quick-cmd" data-cmd="หากรรไกร">✂️ กรรไกร</button>
-            <button class="quick-cmd" data-cmd="หากุญแจ">🔑 กุญแจ</button>
-            <button class="quick-cmd" data-cmd="หาคีม">🔧 คีม</button>
-            <button class="quick-cmd" data-cmd="หายางลบ">📝 ยางลบ</button>
-            <button class="quick-cmd" data-cmd="หาสายไฟ">🔌 สายไฟ</button>
-            <button class="quick-cmd" data-cmd="หาปลั๊กไฟ">🔌 ปลั๊กไฟ</button>
-            <button class="quick-cmd" data-cmd="หาเทปกาว">📦 เทปกาว</button>
+        <!-- Text Input for Commands -->
+        <div class="text-input-container" style="padding: 12px 16px; background: var(--bg-card); border-top: 1px solid var(--border);">
+            <input type="text" id="text-input" placeholder="💬 พิมพ์คำสั่ง... (เช่น 'ไปข้างหน้า', 'เลี้ยวซ้าย')" 
+                   style="width: 100%; padding: 14px 16px; background: var(--bg-dark); color: var(--text-primary); 
+                          border: 1px solid var(--border); border-radius: 8px; font-size: 15px; font-family: inherit;"
+                   onkeypress="if(event.key==='Enter') sendTextCommand()">
         </div>
         
         <div class="controls">
@@ -559,39 +555,125 @@
 <div class="overlay" id="settings-overlay"></div>
 
 <script>
+    // ======================== ERROR HANDLER ========================
+    window.onerror = function(msg, url, line, col, error) {
+        console.error('🔴 JS Error:', msg, 'at line', line, 'col', col);
+        alert('JS Error at line ' + line + ': ' + msg);
+        return false;
+    };
+    
+    console.log('🚀 VORA Script Starting...');
+    
     // ======================== CONFIG ========================
     const hostname = window.location.hostname;
     const isSecure = window.location.protocol === 'https:';
+    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+    const isSecureContext = window.isSecureContext;
     
-    // Cloudflare Tunnel URLs (valid HTTPS for mobile)
-    const CLOUDFLARE_API = 'requests-populations-nurses-broadband.trycloudflare.com';
-    
-    // ถ้าเข้าผ่าน Cloudflare tunnel ให้ใช้ Cloudflare API
-    const isCloudflare = hostname.includes('trycloudflare.com');
-    
-    // API Base URL - ใช้สำหรับทุก API calls
-    const API_BASE = isCloudflare 
-        ? `https://${CLOUDFLARE_API}`
-        : `${isSecure ? 'https' : 'http'}://${hostname}:${isSecure ? '8000' : '8080'}`;
-    
-    let SERVER_WS_URL;
-    if (isCloudflare) {
-        // Cloudflare tunnel - ใช้ wss://
-        SERVER_WS_URL = `wss://${CLOUDFLARE_API}/ws/stt`;
-    } else if (isSecure) {
-        // Local HTTPS - port 8000
-        SERVER_WS_URL = `wss://${hostname}:8000/ws/stt`;
-    } else {
-        // Local HTTP - port 8080
-        SERVER_WS_URL = `ws://${hostname}:8080/ws/stt`;
+    // ถ้าเข้าผ่าน IP และไม่ใช่ secure context - แสดง warning
+    if (!isSecureContext && !isLocalhost) {
+        console.warn('⚠️ Not a secure context - microphone will not work');
+        // Show warning banner
+        const banner = document.createElement('div');
+        banner.id = 'http-warning';
+        banner.style.cssText = `
+            position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+            background: linear-gradient(135deg, #d29922, #da3633); color: white;
+            padding: 12px 20px; text-align: center; font-size: 13px;
+            display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap;
+        `;
+        banner.innerHTML = `
+            <span>⚠️ <strong>HTTP ไม่รองรับไมโครโฟน</strong> - ต้องใช้ localhost หรือ HTTPS</span>
+            <button onclick="window.location.href='http://localhost:9000'" style="background:#fff;color:#333;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-weight:bold;">
+                🔄 เปลี่ยนไป localhost:9000
+            </button>
+            <button onclick="document.getElementById('http-warning').remove()" style="background:transparent;color:#fff;border:1px solid #fff;padding:6px 12px;border-radius:4px;cursor:pointer;">
+                ✕ ปิด
+            </button>
+        `;
+        document.body.prepend(banner);
     }
     
-    const GATEWAY_WS_URL = `ws://${hostname}:9001/gw/dashboard`;  // Gateway ยังใช้ ws://
+    // ======================== DYNAMIC URL CONFIGURATION ========================
+    // Runtime config - จะถูกโหลดจาก /config.js (injected โดย backend)
+    // รองรับ: HTTP localhost, HTTPS self-signed, Tailscale Serve
     
-    console.log(`🔌 Frontend: ${window.location.protocol}//${hostname}`);
-    console.log(`📡 STT Server: ${SERVER_WS_URL}`);
-    console.log(`🌐 API Base: ${API_BASE}`);
-    console.log(`☁️ Is Cloudflare: ${isCloudflare}`);
+    let API_BASE, SERVER_WS_URL;
+    let configLoaded = false;
+    
+    // ตรวจสอบว่าเป็น Tailscale domain หรือไม่
+    const isTailscale = hostname.endsWith('.ts.net');
+    // isLocalhost ถูก declare ไว้แล้วด้านบน
+    
+    async function loadConfig() {
+        try {
+            // พยายามโหลด dynamic config จาก backend
+            // ถ้าเป็น Tailscale หรือ port 443/80 → ไม่ต้องใส่ port
+            const portPart = (window.location.port && window.location.port !== '443' && window.location.port !== '80') 
+                ? `:${window.location.port}` 
+                : '';
+            const configUrl = `${window.location.protocol}//${hostname}${portPart}/config.js`;
+            console.log(`📡 Loading config from: ${configUrl}`);
+            
+            const script = document.createElement('script');
+            script.src = configUrl + '?t=' + Date.now();  // Cache bust
+            
+            await new Promise((resolve, reject) => {
+                script.onload = resolve;
+                script.onerror = () => {
+                    console.warn('⚠️ Failed to load /config.js, using fallback');
+                    resolve();  // ไม่ error แค่ใช้ fallback
+                };
+                document.head.appendChild(script);
+            });
+            
+            // ถ้าโหลดสำเร็จและมี VORA_CONFIG
+            if (window.VORA_CONFIG) {
+                const cfg = window.VORA_CONFIG;
+                const apiPort = cfg.API_PORT;
+                const protocol = cfg.IS_HTTPS ? 'https' : 'http';
+                const wsProtocol = cfg.IS_HTTPS ? 'wss' : 'ws';
+                
+                // Tailscale Serve ใช้ port 443 (default HTTPS)
+                if (isTailscale) {
+                    API_BASE = `https://${hostname}`;  // No port needed
+                    SERVER_WS_URL = `wss://${hostname}/ws/stt`;
+                } else {
+                    API_BASE = `${protocol}://${hostname}:${apiPort}`;
+                    SERVER_WS_URL = `${wsProtocol}://${hostname}:${apiPort}${cfg.WS_ENDPOINT}`;
+                }
+                
+                console.log(`✅ Config loaded from backend:`, cfg);
+                configLoaded = true;
+            } else {
+                throw new Error('VORA_CONFIG not found');
+            }
+        } catch (err) {
+            // Fallback: ใช้ค่าจาก URL
+            console.warn('⚠️ Using fallback config:', err.message);
+            
+            if (isTailscale) {
+                // Tailscale Serve: ใช้ HTTPS port 443
+                API_BASE = `https://${hostname}`;
+                SERVER_WS_URL = `wss://${hostname}/ws/stt`;
+            } else if (isSecure) {
+                // Self-signed HTTPS
+                API_BASE = `https://${hostname}:8443`;
+                SERVER_WS_URL = `wss://${hostname}:8443/ws/stt`;
+            } else {
+                // HTTP localhost
+                API_BASE = `http://${hostname}:8080`;
+                SERVER_WS_URL = `ws://${hostname}:8080/ws/stt`;
+            }
+        }
+        
+        console.log(`🔌 Frontend: ${window.location.protocol}//${hostname}:${window.location.port}`);
+        console.log(`📡 STT WebSocket: ${SERVER_WS_URL}`);
+        console.log(`🌐 API Base: ${API_BASE}`);
+        console.log(`🔒 Secure Mode: ${isSecure}`);
+        console.log(`🔗 Tailscale: ${isTailscale}`);
+        console.log(`📋 Config Source: ${configLoaded ? 'Backend /config.js' : 'Fallback'}`);
+    }
     
     // ======================== VARIABLES ========================
     let wsServer, wsGateway;
@@ -607,6 +689,8 @@
     let ttsEnabled = true;  // TTS enabled by default
     let ttsSpeed = 1.0;     // TTS speed
     let currentAudio = null; // Current playing audio
+    let isProcessing = false; // กำลัง process LLM/TTS อยู่
+    let processingStartTime = 0;
     
     const historyDiv = document.getElementById('chat-history');
     const liveDiv = document.getElementById('live-transcript');
@@ -680,8 +764,45 @@
         return cleaned.trim();
     }
     
+    // ======================== SECURE CONTEXT CHECK ========================
+    function checkSecureContext() {
+        // Microphone requires HTTPS or localhost
+        const isSecureContext = window.isSecureContext;
+        const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+        
+        console.log(`🔒 Secure Context: ${isSecureContext}, Localhost: ${isLocalhost}`);
+        
+        if (!isSecureContext && !isLocalhost) {
+            // Show warning in mic select
+            micSelect.innerHTML = `<option>⚠️ HTTP ไม่รองรับไมค์ - ใช้ localhost หรือ HTTPS</option>`;
+            activeMicDiv.innerHTML = `<span style="color: var(--warn);">⚠️ ต้องใช้ localhost หรือ HTTPS</span>`;
+            
+            // Show instruction alert
+            const msg = `⚠️ ไม่สามารถใช้ไมโครโฟนผ่าน HTTP ได้
+
+วิธีแก้ไข:
+1️⃣ เปิดผ่าน localhost:9000 แทน (ถ้าอยู่บนเครื่องเดียวกัน)
+
+2️⃣ หรือ set Chrome flag:
+   - เปิด chrome://flags/#unsafely-treat-insecure-origin-as-secure
+   - เพิ่ม: http://192.168.104.31:9000
+   - กด Relaunch
+
+3️⃣ หรือใช้ Cloudflare Tunnel (HTTPS) บนมือถือ`;
+            
+            console.warn(msg);
+            return false;
+        }
+        return true;
+    }
+    
     // ======================== MICROPHONE ENUMERATION ========================
     async function enumerateMicrophones() {
+        // Check secure context first
+        if (!checkSecureContext()) {
+            return;
+        }
+        
         try {
             const devices = await navigator.mediaDevices.enumerateDevices();
             availableMics = devices.filter(device => device.kind === 'audioinput');
@@ -719,6 +840,10 @@
                 document.getElementById('btn-allow-mic').style.display = 'block';
             } else if (error.name === 'NotFoundError') {
                 micSelect.innerHTML = '<option>❌ No microphones found</option>';
+            } else if (error.name === 'TypeError') {
+                // This happens when mediaDevices is undefined (HTTP + non-localhost)
+                micSelect.innerHTML = '<option>⚠️ HTTP ไม่รองรับ - ใช้ localhost</option>';
+                activeMicDiv.innerHTML = `<span style="color: var(--warn);">ต้องใช้ localhost หรือ HTTPS</span>`;
             } else {
                 micSelect.innerHTML = '<option>❌ Error: ' + error.name + '</option>';
             }
@@ -810,10 +935,56 @@
     btnRefreshMics.addEventListener('click', enumerateMicrophones);
     document.getElementById('btn-allow-mic').addEventListener('click', requestMicrophonePermission);
     
-    // ======================== WEBSOCKET: STT SERVER ========================
-    function connectServer() {
-        console.log(`🔌 Connecting to: ${SERVER_WS_URL}`);
-        liveDiv.innerText = `🔌 Connecting to ${isCloudflare ? 'Cloudflare' : 'Server'}...`;
+    // ======================== HEALTH CHECK + WEBSOCKET CONNECTION ========================
+    
+    async function checkAPIHealth() {
+        // ตรวจสอบว่า API server ทำงานอยู่หรือไม่
+        try {
+            const healthUrl = `${API_BASE}/health`;
+            console.log(`🏥 Checking API health: ${healthUrl}`);
+            
+            const response = await fetch(healthUrl, {
+                method: 'GET',
+                headers: {'Accept': 'application/json'},
+                signal: AbortSignal.timeout(5000)  // 5s timeout
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                console.log(`✅ API Health OK:`, data);
+                serverInfoDiv.textContent = `Connected to ${API_BASE}`;
+                return true;
+            } else {
+                console.warn(`⚠️ API health check failed: ${response.status}`);
+                return false;
+            }
+        } catch (err) {
+            console.error(`❌ API unreachable:`, err.message);
+            serverInfoDiv.textContent = `Cannot reach ${API_BASE}`;
+            return false;
+        }
+    }
+    
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 10;
+    const RECONNECT_DELAYS = [1000, 2000, 3000, 5000, 10000];  // Progressive backoff
+    
+    async function connectServer() {
+        // ตรวจสอบ health ก่อน
+        const apiHealthy = await checkAPIHealth();
+        if (!apiHealthy && reconnectAttempts < 3) {
+            // Retry health check
+            console.log(`⏳ API not ready, retrying in 2s...`);
+            liveDiv.innerText = `⏳ Waiting for API server...`;
+            setTimeout(() => {
+                reconnectAttempts++;
+                connectServer();
+            }, 2000);
+            return;
+        }
+        
+        console.log(`🔌 Connecting to WebSocket: ${SERVER_WS_URL}`);
+        liveDiv.innerText = `🔌 Connecting to Server...`;
         
         try {
             wsServer = new WebSocket(SERVER_WS_URL);
@@ -821,6 +992,7 @@
         } catch (err) {
             console.error('❌ WebSocket creation failed:', err);
             liveDiv.innerText = `❌ Connection failed: ${err.message}`;
+            scheduleReconnect();
             return;
         }
         
@@ -828,6 +1000,8 @@
             console.log('✅ Connected to STT server');
             liveDiv.innerText = `✅ Connected! Initializing...`;
             updateConnectionStatus();
+            reconnectAttempts = 0;  // Reset counter on success
+            
             // ส่ง init พร้อม sample rate และ settings
             const initMsg = {
                 type: "start_session",
@@ -852,13 +1026,22 @@
                     console.log(`✅ Session started at ${data.rate}Hz`);
                     liveDiv.innerText = `🎤 Ready (${data.rate}Hz)`;
                 } else if (data.type === 'final' && data.text) {
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('🎤 FINAL TRANSCRIPT RECEIVED');
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    
                     // Clean text before display
                     const rawText = data.text;
                     const cleanedText = cleanText(rawText);
                     currentPartial = cleanedText;
                     
-                    console.log(`📝 Raw: "${rawText}"`);
-                    console.log(`✨ Clean: "${cleanedText}"`);
+                    console.log(`📝 Raw Text: "${rawText}"`);
+                    console.log(`✨ Cleaned Text: "${cleanedText}"`);
+                    console.log(`🔧 Mode: ${processMode}`);
+                    
+                    // 🛑 STOP STT ทันที เมื่อได้ transcript แล้ว
+                    console.log('🛑 Stopping STT (Single Query Mode)');
+                    stopMicrophone();
                     
                     // แสดงทั้ง raw และ clean ใน chat
                     addMsg('user', `🎤 ${cleanedText}`, rawText !== cleanedText ? rawText : null);
@@ -867,11 +1050,15 @@
                     // Handle based on mode
                     if (processMode === 'auto-llm' && cleanedText.length > 0) {
                         // Auto send to LLM
+                        console.log('🚀 Auto-sending to LLM...');
                         sendToLLM(cleanedText);
                     } else if (processMode === 'manual-llm') {
+                        console.log('✋ Manual mode - enable Ask button');
                         btnAsk.disabled = false;
+                    } else {
+                        console.log('📝 Transcript-only mode - Ready for next query');
+                        showReadyButton();
                     }
-                    // transcript-only mode: แค่แสดง ไม่ทำอะไร
                     
                 } else if (data.type === 'partial' && data.text) {
                     currentPartial = data.text;
@@ -892,50 +1079,86 @@
             console.log('🔌 Server disconnected, code:', event.code, 'reason:', event.reason);
             liveDiv.innerText = `🔌 Disconnected (${event.code})`;
             updateConnectionStatus();
-            setTimeout(connectServer, 3000);
+            scheduleReconnect();
         };
     }
     
+    function scheduleReconnect() {
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.error(`❌ Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached`);
+            liveDiv.innerText = `❌ Connection failed - Refresh page to retry`;
+            serverInfoDiv.textContent = `Connection failed`;
+            return;
+        }
+        
+        const delayIndex = Math.min(reconnectAttempts, RECONNECT_DELAYS.length - 1);
+        const delay = RECONNECT_DELAYS[delayIndex];
+        
+        reconnectAttempts++;
+        console.log(`⏳ Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+        liveDiv.innerText = `⏳ Reconnecting in ${delay/1000}s... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`;
+        
+        setTimeout(connectServer, delay);
+    }
+    
     // ======================== WEBSOCKET: GATEWAY ========================
+    // Gateway is optional - only for MyAGV robot connection
+    // ถ้าไม่มี Gateway ก็ไม่ต้อง connect (ไม่ block การทำงาน)
     function connectGateway() {
-        wsGateway = new WebSocket(GATEWAY_WS_URL);
+        // Skip Gateway connection if using HTTPS (mixed content issue)
+        // Gateway will be upgraded to WSS later when needed
+        if (isSecure) {
+            console.log('⏭️ Skipping Gateway (HTTPS mode - Gateway not yet WSS)');
+            return;
+        }
         
-        wsGateway.onopen = () => {
-            console.log('✅ Connected to Gateway');
-            updateConnectionStatus();
-        };
-        
-        wsGateway.onmessage = (e) => {
-            try {
-                const data = JSON.parse(e.data);
-                if (data.type === 'partial') {
-                    liveDiv.innerText = `🤖 Gateway: ${data.text}`;
-                } else if (data.type === 'final') {
-                    addMsg('user', `🤖 ${data.text}`);
-                    liveDiv.innerText = `✅ ${data.text}`;
+        try {
+            wsGateway = new WebSocket(GATEWAY_WS_URL);
+            
+            wsGateway.onopen = () => {
+                console.log('✅ Connected to Gateway');
+                updateConnectionStatus();
+            };
+            
+            wsGateway.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'partial') {
+                        liveDiv.innerText = `🤖 Gateway: ${data.text}`;
+                    } else if (data.type === 'final') {
+                        addMsg('user', `🤖 ${data.text}`);
+                        liveDiv.innerText = `✅ ${data.text}`;
+                    }
+                } catch (err) {
+                    console.error('Error:', err);
                 }
-            } catch (err) {
-                console.error('Error:', err);
-            }
-        };
-        
-        wsGateway.onclose = () => {
-            console.log('🔌 Gateway disconnected');
-            updateConnectionStatus();
-            setTimeout(connectGateway, 5000);
-        };
+            };
+            
+            wsGateway.onclose = () => {
+                console.log('🔌 Gateway disconnected');
+                updateConnectionStatus();
+                // Don't auto-reconnect Gateway - it's optional
+            };
+            
+            wsGateway.onerror = () => {
+                console.log('⚠️ Gateway not available (optional)');
+            };
+        } catch (err) {
+            console.log('⚠️ Gateway connection failed (optional)');
+        }
     }
     
     function updateConnectionStatus() {
         const serverOk = wsServer && wsServer.readyState === WebSocket.OPEN;
         const gatewayOk = wsGateway && wsGateway.readyState === WebSocket.OPEN;
         
+        // Server connection is primary - Gateway is optional
         if (serverOk && gatewayOk) {
-            statusDiv.innerHTML = "🟢 Both Connected";
+            statusDiv.innerHTML = "🟢 Connected (+ Robot)";
             statusDiv.className = 'status-pill online';
         } else if (serverOk) {
-            statusDiv.innerHTML = "🟡 Server Only";
-            statusDiv.className = 'status-pill partial';
+            statusDiv.innerHTML = "🟢 Connected";
+            statusDiv.className = 'status-pill online';
         } else if (gatewayOk) {
             statusDiv.innerHTML = "🟡 Gateway Only";
             statusDiv.className = 'status-pill partial';
@@ -991,12 +1214,21 @@
             source.connect(processor);
             processor.connect(audioContext.destination);
             isRecording = true;
+            isProcessing = false;
+            
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('🎤 MICROPHONE STARTED');
+            console.log(`📊 Sample Rate: ${selectedSampleRate}Hz`);
+            console.log(`⏱️ Silence Timeout: ${selectedSilenceTimeout}ms`);
+            console.log(`📏 Min Speech: ${selectedMinSpeech}s`);
+            console.log(`🔧 Mode: ${processMode}`);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             
             micStatusDiv.innerHTML = `🎤 Recording (${selectedSampleRate/1000}kHz)`;
             micStatusDiv.className = 'status-pill online';
             btnMic.classList.add('listening');
             btnMic.innerHTML = "⏹️ Stop";
-            liveDiv.innerText = "🎤 Listening...";
+            liveDiv.innerText = "🎤 พูดได้เลย...";
             
             // อัพเดท display อีกครั้งหลังจากเริ่ม recording จริง
             sampleRateDisplay.textContent = `✅ ${selectedSampleRate/1000} kHz`;
@@ -1010,6 +1242,8 @@
     function stopMicrophone() {
         if (processor) processor.disconnect();
         if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+        
+        console.log('🛑 MICROPHONE STOPPED');
         
         isRecording = false;
         micStatusDiv.innerHTML = "🎤 Mic OFF";
@@ -1033,6 +1267,54 @@
         stopTTS();  // Stop any playing audio
     };
     btnRefresh.onclick = () => location.reload();
+    
+    // Make startMicrophone global for button onclick
+    window.startMicrophone = startMicrophone;
+    
+    // ======================== TEXT INPUT ========================
+    window.sendTextCommand = async function() {
+        const input = document.getElementById('text-input');
+        const text = input.value.trim();
+        
+        if (!text) return;
+        
+        console.log(`💬 Text command: ${text}`);
+        addMsg('user', `💬 ${text}`);
+        
+        // ล้าง input
+        input.value = '';
+        
+        // ส่งไปประมวลผล
+        await sendToLLM(text);
+    };
+    
+    // ======================== SEND COMMAND TO ROBOT ========================
+    async function sendCommandToRobot(command) {
+        console.log(`🚀 Sending command to robot:`, command);
+        
+        try {
+            const response = await fetch(`${API_BASE}/api/server/robot-command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    robot_id: 'myagv',  // Default robot ID
+                    command: command
+                })
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                console.log(`✅ Command sent successfully:`, result);
+                addMsg('vora', `✅ สั่งคำสั่งไปหุ่นแล้ว: ${command.cmd}`, null, 'info');
+            } else {
+                console.error(`❌ Failed to send command:`, response.status);
+                addMsg('vora', `⚠️ ไม่สามารถส่งคำสั่งไปหุ่นได้`, null, 'warn');
+            }
+        } catch (error) {
+            console.error(`❌ Error sending command:`, error);
+            addMsg('vora', `❌ ข้อผิดพลาด: ${error.message}`, null, 'error');
+        }
+    }
     
     // TTS Settings
     document.getElementById('tts-enabled').onchange = (e) => {
@@ -1128,13 +1410,27 @@
     // ======================== LLM INTEGRATION ========================
     async function sendToLLM(text) {
         if (!text || text.trim().length === 0) return;
+        if (isProcessing) {
+            console.warn('⚠️ Already processing, ignoring...');
+            return;
+        }
+        
+        isProcessing = true;
+        processingStartTime = Date.now();
+        btnMic.disabled = true;
+        btnMic.innerHTML = "⏳ Processing...";
+        
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🧠 STARTING LLM PROCESSING');
+        console.log(`📝 Query: "${text}"`);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         
         addMsg('vora', "🧠 กำลังประมวลผล...");
         
         try {
             // ใช้ /pipeline/command endpoint (NEW: Full Pipeline)
             const apiUrl = `${API_BASE}/pipeline/command`;
-            console.log(`📡 Sending to Pipeline: ${apiUrl}`);
+            console.log(`📡 API URL: ${apiUrl}`);
             
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -1181,6 +1477,11 @@
                         `• <code>${c.cmd}</code>: ${JSON.stringify(c.params)}`
                     ).join('<br>');
                     addMsg('vora', `🤖 Robot Commands:<br>${cmdList}`, null, 'info');
+                    
+                    // 🚀 ส่งคำสั่งไปหุ่นจริงผ่าน Gateway
+                    for (const cmd of data.commands) {
+                        await sendCommandToRobot(cmd);
+                    }
                 }
                 
                 // แสดง Vision result (ถ้ามี)
@@ -1189,17 +1490,61 @@
                     addMsg('vora', `👁️ เจอ <b>${v.object_name}</b> อยู่ทาง <b>${v.object_location}</b> (${Math.round(v.confidence*100)}%)`, null, 'info');
                 }
                 
+                const elapsed = Date.now() - processingStartTime;
+                console.log(`✅ Processing complete in ${elapsed}ms`);
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                
             } else {
                 const errorText = await response.text();
-                console.error('Pipeline Error:', response.status, errorText);
+                console.error('❌ Pipeline Error:', response.status, errorText);
                 addMsg('vora', `❌ Error ${response.status}: ${errorText}`);
             }
         } catch (error) {
-            console.error('Pipeline Error:', error);
-            addMsg('vora', `❌ Connection Error: ${error.message}`);
+            console.error('❌ Pipeline Error:', error);
+            addMsg('vora', `❌ เกิดข้อผิดพลาด: ${error.message}`);
+        } finally {
+            // Reset processing state
+            isProcessing = false;
+            btnMic.disabled = false;
+            btnMic.innerHTML = "🎤 Start";
+            
+            // แสดงปุ่ม "พร้อมสำหรับคำถามถัดไป"
+            showReadyButton();
         }
     }
     
+    // ======================== READY BUTTON ========================
+    function showReadyButton() {
+        console.log('✅ Ready for next query');
+        
+        // แสดง message พร้อมปุ่ม
+        const readyDiv = document.createElement('div');
+        readyDiv.className = 'msg vora';
+        readyDiv.style.background = 'rgba(35,214,54,0.15)';
+        readyDiv.style.borderLeft = '3px solid #3fb950';
+        readyDiv.innerHTML = `
+            <b>✅ เสร็จสิ้น!</b><br>
+            <button onclick="startMicrophone()" style="
+                margin-top: 10px;
+                padding: 12px 24px;
+                background: linear-gradient(135deg, #3fb950, #238636);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                cursor: pointer;
+                box-shadow: 0 2px 8px rgba(35,134,54,0.3);
+                transition: all 0.2s;
+            " onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(35,134,54,0.4)'" onmouseout="this.style.transform='';this.style.boxShadow='0 2px 8px rgba(35,134,54,0.3)'">
+                🎤 ถามคำถามถัดไป
+            </button>
+        `;
+        historyDiv.appendChild(readyDiv);
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+    }
+    
+    // ======================== MESSAGE DISPLAY ========================
     function addMsg(role, text, rawText = null, msgType = null) {
         if (!text) return;
         const msgDiv = document.createElement('div');
@@ -1229,22 +1574,38 @@
     }
     
     // ======================== INITIALIZATION ========================
-    // แสดง server info ตาม connection type
-    if (isCloudflare) {
-        serverInfoDiv.innerText = `📡 Cloudflare Tunnel`;
-    } else {
-        serverInfoDiv.innerText = `📡 ${hostname}:${isSecure ? '8000' : '8080'}`;
+    
+    async function init() {
+        console.log('🚀 Initializing VORA...');
+        
+        // 1. โหลด config จาก backend
+        await loadConfig();
+        
+        // 2. แสดง server info
+        serverInfoDiv.innerText = `📡 ${API_BASE}`;
+        
+        // 3. Auto-detect sample rate และ enumerate mics พร้อมกัน
+        detectSampleRate();
+        enumerateMicrophones();
+        navigator.mediaDevices.addEventListener('devicechange', enumerateMicrophones);
+        
+        // 4. เชื่อมต่อ WebSocket
+        connectServer();
+        connectGateway();
+        
+        // 5. Update connection status ทุกวินาที
+        updateConnectionStatus();
+        setInterval(updateConnectionStatus, 1000);
+        
+        console.log('✅ VORA initialized');
     }
     
-    // Auto-detect sample rate และ enumerate mics พร้อมกัน
-    detectSampleRate();
-    enumerateMicrophones();
-    navigator.mediaDevices.addEventListener('devicechange', enumerateMicrophones);
-    
-    connectServer();
-    connectGateway();
-    updateConnectionStatus();
-    setInterval(updateConnectionStatus, 1000);
+    // เรียก init เมื่อ DOM ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
     
     // ======================== QUICK COMMANDS ========================
     document.querySelectorAll('.quick-cmd').forEach(btn => {

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VORA Debug</title>
+    <style>
+        body { font-family: monospace; background: #1a1a2e; color: #eee; padding: 20px; }
+        .ok { color: #0f0; }
+        .err { color: #f00; }
+        button { padding: 10px 20px; font-size: 16px; margin: 10px 0; }
+        #log { background: #0d0d1a; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>🔧 VORA Debug Page</h1>
+    <p>URL: <span id="url"></span></p>
+    <button id="testConfig">1. Test /config.js</button>
+    <button id="testHealth">2. Test /health</button>
+    <button id="testWS">3. Test WebSocket</button>
+    <button id="testMic">4. Test Microphone</button>
+    <hr>
+    <pre id="log"></pre>
+
+    <script>
+        const log = document.getElementById('log');
+        const hostname = window.location.hostname;
+        const isTailscale = hostname.endsWith('.ts.net');
+        
+        document.getElementById('url').textContent = window.location.href;
+        
+        function addLog(msg, isError = false) {
+            const line = document.createElement('div');
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            line.className = isError ? 'err' : 'ok';
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        addLog(`Host: ${hostname}`);
+        addLog(`Protocol: ${window.location.protocol}`);
+        addLog(`Tailscale: ${isTailscale}`);
+        addLog(`Secure Context: ${window.isSecureContext}`);
+        
+        // Test 1: Config
+        document.getElementById('testConfig').onclick = async () => {
+            addLog('Loading /config.js...');
+            try {
+                const script = document.createElement('script');
+                script.src = `/config.js?t=${Date.now()}`;
+                script.onload = () => {
+                    if (window.VORA_CONFIG) {
+                        addLog(`✅ Config: ${JSON.stringify(window.VORA_CONFIG)}`);
+                    } else {
+                        addLog('❌ VORA_CONFIG not set!', true);
+                    }
+                };
+                script.onerror = () => addLog('❌ Failed to load /config.js', true);
+                document.head.appendChild(script);
+            } catch (e) {
+                addLog(`❌ Error: ${e.message}`, true);
+            }
+        };
+        
+        // Test 2: Health
+        document.getElementById('testHealth').onclick = async () => {
+            const url = isTailscale ? `https://${hostname}/health` : `/health`;
+            addLog(`Fetching ${url}...`);
+            try {
+                const resp = await fetch(url);
+                const data = await resp.json();
+                addLog(`✅ Health: ${JSON.stringify(data)}`);
+            } catch (e) {
+                addLog(`❌ Health failed: ${e.message}`, true);
+            }
+        };
+        
+        // Test 3: WebSocket
+        document.getElementById('testWS').onclick = async () => {
+            const wsUrl = isTailscale 
+                ? `wss://${hostname}/ws/stt`
+                : `ws://${hostname}:8080/ws/stt`;
+            addLog(`Connecting to ${wsUrl}...`);
+            try {
+                const ws = new WebSocket(wsUrl);
+                ws.onopen = () => {
+                    addLog(`✅ WebSocket connected!`);
+                    ws.send(JSON.stringify({type: 'test'}));
+                    setTimeout(() => ws.close(), 1000);
+                };
+                ws.onerror = (e) => addLog(`❌ WebSocket error: ${e}`, true);
+                ws.onclose = (e) => addLog(`WebSocket closed: code=${e.code}`);
+                ws.onmessage = (e) => addLog(`📩 Received: ${e.data}`);
+            } catch (e) {
+                addLog(`❌ WebSocket failed: ${e.message}`, true);
+            }
+        };
+        
+        // Test 4: Microphone
+        document.getElementById('testMic').onclick = async () => {
+            addLog('Testing microphone access...');
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                addLog(`❌ mediaDevices not available (need HTTPS or localhost)`, true);
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const tracks = stream.getTracks();
+                addLog(`✅ Microphone: ${tracks.length} track(s)`);
+                for (const t of tracks) {
+                    addLog(`   Track: ${t.label}`);
+                    t.stop();
+                }
+            } catch (e) {
+                addLog(`❌ Microphone failed: ${e.name} - ${e.message}`, true);
+            }
+        };
+        
+        addLog('Ready. Click buttons to test.');
+    </script>
+</body>
+</html>
