@@ -29,6 +29,6 @@ class Settings:
     MEMORY_MAX_CHARS: int = int(os.getenv("MEMORY_MAX_CHARS", "4000"))     # จำกัดความยาว context ที่ส่งเข้า LLM
     
     # TTS Configuration
-    TTS_BACKEND: str = os.getenv("TTS_BACKEND", "gtts")  # gtts (default), พibper, typhoon2 disabled
+    TTS_BACKEND: str = os.getenv("TTS_BACKEND", "gtts")  # gtts (default), piper, typhoon2 disabled
 
 settings = Settings()

@@ -96,13 +96,17 @@ ROBOT_PLANNER_PROMPT = """
    }
 """
 
+class RobotPlanRequest(BaseModel):
+    text: str = Field(..., description="คำสั่งจากผู้ใช้")
+    session_id: Optional[str] = None
+
 @router.post("/plan", response_model=RobotPlanResponse)
-async def generate_plan(text: str, session_id: Optional[str] = None):
+async def generate_plan(req: RobotPlanRequest):
     try:
         # เรียก LLM เพื่อทำ Semantic Mapping
         data = LLM_PLANNER.generate_json(
             system=ROBOT_PLANNER_PROMPT,
-            prompt=f"คำสั่งจากผู้ใช้: {text}",
+            prompt=f"คำสั่งจากผู้ใช้: {req.text}",
             temperature=0.1
         )
 

@@ -12,7 +12,7 @@ class RefineRequest(BaseModel):
 
 class RefineResult(BaseModel):
     language: str = "th"
-    intent: Literal["ask","search","navigate","chitchat","other"] = "other"
+    intent: Literal["ask","search","navigate","chitchat","other","control","find_object","info"] = "other"
     clean_text: str
     short_prompt: str
     search_query: str

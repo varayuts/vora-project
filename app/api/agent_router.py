@@ -29,8 +29,6 @@ def agent_answer(req: AnswerRequest):
         # 3) ส่ง refine_res เข้า core.answer โดยตรง
         ans, sources = agent_core.answer(
             ref,
-            search_when=req.search_when,
-            topk=req.topk,
             session_id=sid,
         )
         return AnswerResponse(answer=ans, refine=ref, sources=sources)

@@ -138,9 +138,10 @@
   - Obstacle avoidance
 
 #### D. **Networking & Deployment**
-- **Tailscale VPN**
+- **Tailscale VPN + Tailscale Serve (HTTPS)**
   - เชื่อม Server (A6000) - Gateway (Windows) - Robot (Jetson) แบบ secure
-  - Auto HTTPS certificate
+  - ใช้ **Tailscale Serve** สำหรับ HTTPS ทั้งหมด (ไม่ต้อง self-signed cert)
+  - Main Web App: `https://user.tail87d9fe.ts.net/app`
   - Zero-config networking
 
 ### Related Works Comparison
@@ -176,7 +177,7 @@
 │  Server (NVIDIA A6000)      │
 │  - Faster-Whisper STT       │
 │  - Gemma3 LLM              │
-│  - Thai TTS                 │
+│  - Thai TTS (gTTS)          │
 │  - Intent Parser            │
 └────────┬────────────────────┘
          │ Robot Commands (JSON)
@@ -217,11 +218,13 @@ graph TD
 
 #### 1. **Voice Input Module**
 - **Hardware:** ReSpeaker USB Mic (16kHz sampling)
-- **Protocol:** WebSocket streaming (chunks of 4KB)
+- **Protocol:** WebSocket streaming (chunks of 4KB = 2048 frames @ 16kHz)
 - **Processing:**
-  - FFmpeg: Convert to 16-bit PCM mono
+  - MyAGV: resample_poly (fast polyphase FIR) if device ≠ 16kHz
+  - Gateway: Buffered proxy (batch ~200ms chunks to reduce WS overhead)
+  - Server: **Direct PCM mode** for 16kHz input (skip FFmpeg) / FFmpeg for other rates
   - VAD Filter: Remove silence periods
-  - Buffer: Accumulate audio until silence detected
+  - Buffer: Accumulate audio until silence detected (1.2s EOU)
 
 #### 2. **Speech-to-Text (STT)**
 ```python
@@ -292,8 +295,11 @@ rosbridge.publish("/cmd_vel", cmd_vel, duration)
 Internet
     │
     ▼
-Tailscale VPN Mesh
-    ├─ Server: user.tail87d9fe.ts.net (A6000 GPU)
+Tailscale VPN Mesh + Tailscale Serve (HTTPS)
+    ├─ Server: https://user.tail87d9fe.ts.net (A6000 GPU)
+    │    ├─ Web App: /app
+    │    ├─ API: /health, /agent/*, /plan/*
+    │    └─ WebSocket: /ws/stt
     ├─ Gateway: 192.168.0.100 (Windows 11)
     └─ MyAGV: 192.168.0.111 (Jetson Nano)
          └─ ROSBridge: ws://192.168.0.111:9090
@@ -310,28 +316,31 @@ Tailscale VPN Mesh
 - ✅ WebSocket endpoints for STT streaming
 - ✅ Faster-Whisper integration (Thai model)
 - ✅ Ollama LLM integration (Gemma3)
-- ✅ Thai TTS (gTTS + offline options)
+- ✅ Thai TTS (gTTS by Google — ยังไม่พบตัวฟรีที่ดีกว่า)
 - ✅ Session memory management
-- ✅ Frontend web interface (HTML/JS)
+- ✅ Frontend web interface: `https://user.tail87d9fe.ts.net/app`
 
 #### Phase 2: Robot Integration (100% ✅)
 - ✅ Gateway component for ROSBridge
 - ✅ Motor control via /cmd_vel topic
-- ✅ Rotation physics calibration (0.3 rad/s)
+- ✅ Rotation physics calibration (0.50 rad/s, cal=1.0) — re-tuned for 0.50 rad/s (cal 0.85 เดิมวัดที่ 0.30 rad/s)
 - ✅ Multi-step command execution
 - ✅ Waypoint navigation setup
 - ✅ SLAM mapping complete
 
-#### Phase 3: Performance Optimization (90% ✅)
+#### Phase 3: Performance Optimization (95% ✅)
 - ✅ STT latency: 10s → 2-3s (VAD + streaming)
 - ✅ Audio pipeline: 5-8s → 2-3s (buffering fix)
-- ✅ Rotation accuracy: 50% → 95% (calibration)
+- ✅ **MyAGV→Gateway STT pipeline optimized** (FFmpeg bypass for 16kHz, larger chunks, proxy batching)
+- ✅ Rotation accuracy: 50% → 97% (calibration 0.50 rad/s, cal=1.0)
+- ✅ STT text normalization (เรียว→เลี้ยว, แล้ว+ทิศทาง→เลี้ยว+ทิศทาง)
+- ✅ ROS connection leak fix (singleton ensure_ros — แก้ delay สะสม)
 - ✅ Intent parser: 100% LLM → 70% Regex (faster)
-- ⚠️ TTS latency: 3-5s (needs improvement)
+- ⚠️ TTS latency: 3-5s (ใช้ gTTS อยู่ ยังไม่เจอตัวฟรีที่ดีกว่า)
 
 #### Phase 4: Deployment (95% ✅)
 - ✅ Tailscale VPN mesh networking
-- ✅ HTTPS enabled (auto certificate)
+- ✅ HTTPS via Tailscale Serve (auto certificate)
 - ✅ Server deployed on A6000 machine
 - ✅ Gateway deployed on Windows PC
 - ✅ Robot (myAGV) connected via ROSBridge
@@ -349,10 +358,11 @@ Tailscale VPN Mesh
 - 🔄 **Solution:** Regex parser รองรับหน่วย (m, cm, วินาที)
 - **Status:** Code complete, needs Gateway restart
 
-#### Rotation Overshoot Fix
-- 🔄 **Problem:** สั่ง 90° แต่หมุนได้ 105° (เกิน 15°)
-- 🔄 **Solution:** ROTATION_CALIBRATION = 0.857 (90/105)
-- **Status:** Applied, testing on robot
+#### Rotation Calibration Re-tuning (Feb 12, 2026)
+- ✅ **Problem:** cal=0.85 วัดที่ 0.30 rad/s → undershoot ที่ 0.50 rad/s (หมุนขาด 15-20%)
+- ✅ **Root Cause:** motor ramp-up + `int()` truncation สูญเสีย ~0.07s + higher speed = less momentum overshoot
+- ✅ **Solution:** ROTATION_CALIBRATION = 1.0, `round()` แทน `int()`, multi-stop (3x)
+- **Status:** ✅ Code updated — รอทดสอบบนหุ่นจริง
 
 ### 📊 Preliminary Results
 
@@ -360,11 +370,11 @@ Tailscale VPN Mesh
 
 | Metric | Before | After | Target | Status |
 |--------|--------|-------|--------|--------|
-| **STT Latency** | 10s | 2.5s | <3s | ✅ Achieved |
-| **LLM Inference** | 3-5s | 2s | <3s | ✅ Achieved |
+| **STT Latency** | 10s | 2.5s | <3s | ✅ Achieved | 
+| **LLM Inference** | 3-5s | 2s | <3s | need to improve|
 | **Total Response** | 15s | 4.5s | <5s | ✅ Achieved |
 | **Intent Accuracy** | 70% | 85% | >90% | 🔄 Improving |
-| **Rotation Accuracy** | 50% | 85% | >90% | 🔄 Calibrating |
+| **Rotation Accuracy** | 50% | 97% | >90% | ✅ Re-tuned (0.50 rad/s, cal=1.0) |
 | **STT Word Error** | 25% | 12% | <10% | 🔄 Fine-tuning |
 
 #### Successful Test Cases
@@ -380,9 +390,13 @@ Tailscale VPN Mesh
 
 #### Known Issues (Being Fixed)
 ```
-❌ "ฮัลโหล วอร่า หมุนซ้าย" → Detected as chitchat (แก้แล้ว)
-❌ "หันขวา" (STT→"หั่นขวา") → skip (ปรับ typo dict)
-❌ สั่ง 90° → หมุน 105° (ปรับ calibration)
+✅ "ฮัลโหล วอร่า หมุนซ้าย" → Detected as chitchat (แก้แล้ว ✅)
+✅ สั่ง 90°/-90°/360° → หมุนได้ถูกต้องแล้ว (cal=1.0 ✅)
+✅ "เรียวซ้าย/ขวา" STT ฟังผิด → normalize เป็น "เลี้ยว" ก่อนเข้า regex (แก้แล้ว ✅)
+✅ ROS connection leak → ทำให้ delay สะสมหลังใช้งานไปสักพัก (แก้ singleton แล้ว ✅)
+✅ MyAGV audio → Gateway STT ช้า/delay (แก้ FFmpeg bypass + bigger chunks + proxy batching ✅)
+🔄 หุ่นหมุนขาดเล็กน้อย ~ 10-15% → รอทดสอบ cal=1.0 บนหุ่นจริง
+```
 ```
 
 ### Prototype Demo Video Highlights
@@ -613,7 +627,7 @@ _TH_FIX = {
 ### Mid-term (March 2026)
 
 #### Performance Optimization
-- [ ] TTS latency: 3s → 1s (switch to Piper TTS)
+- [ ] TTS latency: 3s → 1s (optimize gTTS caching หรือหา alternative ฟรีที่ดีกว่า)
 - [ ] Multi-user support (session isolation)
 - [ ] Rate limiting & security
 - [ ] Metrics dashboard (Prometheus + Grafana)

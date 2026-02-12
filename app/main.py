@@ -142,8 +142,8 @@ def status():
 
 app.include_router(llm_router,     prefix="",         tags=["LLM"])
 app.include_router(agent_router,   prefix="/agent",   tags=["Agent"])
-app.include_router(plan_router,    prefix="/plan",    tags=["Plan"])
-app.include_router(robot_planner_router, prefix="/robot", tags=["Robot"])
+app.include_router(plan_router,    prefix="",         tags=["Plan"])     # plan_router มี prefix="/plan" แล้ว
+app.include_router(robot_planner_router, prefix="",   tags=["Robot"])   # robot_planner มี prefix="/robot" แล้ว
 app.include_router(pipeline_router)  # /pipeline/* endpoints
 app.include_router(server_router)    # /api/server/* endpoints (TTS gTTS, Queue, State)
 
@@ -193,5 +193,6 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    # รันเซิร์ฟเวอร์ที่ port 8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # รันเซิร์ฟเวอร์ที่ port ตรงกับ config
+    api_port = int(os.getenv("VORA_API_PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=api_port)

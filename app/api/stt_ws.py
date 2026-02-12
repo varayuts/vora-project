@@ -205,6 +205,27 @@ class FFmpegDecoder:
             self.proc.kill()
             self.proc = None
 
+
+class DirectPCMQueue:
+    """
+    Direct PCM passthrough — skips FFmpeg when input is already 16kHz.
+    ลดความหน่วง ~200-500ms จาก subprocess pipe buffer ของ FFmpeg
+    ใช้เมื่อ client (เช่น MyAGV) ส่ง 16kHz PCM16 mono มาตรง
+    """
+    def __init__(self):
+        self.queue = asyncio.Queue()
+
+    async def start(self, rate=16000):
+        logger.info(f"⚡ Direct PCM mode (no FFmpeg): input {rate}Hz = target {TARGET_SR}Hz")
+
+    async def write(self, data: bytes):
+        if data:
+            await self.queue.put(data)
+
+    async def close(self):
+        pass
+
+
 # -------------------- Main Socket --------------------
 
 @router.websocket("/ws/stt")
@@ -212,7 +233,7 @@ async def ws_stt(ws: WebSocket):
     await ws.accept()
     logger.info("🔌 New STT WebSocket connection")
     pcm_buf = PCMBuffer(TARGET_SR)
-    decoder = FFmpegDecoder()
+    decoder = None  # Created lazily — DirectPCMQueue for 16kHz, FFmpegDecoder otherwise
     last_emit_time = 0.0
     last_final_time = 0.0  # เวลาที่ส่ง final ล่าสุด (สำหรับ debounce)
     silence_counter = 0.0
@@ -243,8 +264,10 @@ async def ws_stt(ws: WebSocket):
                 if len(chunk_audio) > 0:
                     tail_rms = np.sqrt(np.mean(chunk_audio**2))
                     
+                    # Adaptive silence tracking (works with any chunk size)
+                    chunk_sec = len(chunk) / (TARGET_SR * SAMPLE_WIDTH)
                     if tail_rms < EOU_RMS_THRESH:
-                        silence_counter += 0.1  # chunk ~100ms (ลดจาก 0.2)
+                        silence_counter += chunk_sec
                     else:
                         silence_counter = 0
 
@@ -303,7 +326,13 @@ async def ws_stt(ws: WebSocket):
                     session_lang = data.get("language", "th")
                     
                     if not is_started:
-                        logger.info(f"🎤 STT session started: {rate}Hz input, lang={session_lang}")
+                        # ⚡ Skip FFmpeg when input is already 16kHz (MyAGV sends 16kHz PCM)
+                        if rate == TARGET_SR:
+                            decoder = DirectPCMQueue()
+                            logger.info(f"⚡ STT session: {rate}Hz DIRECT PCM (no FFmpeg), lang={session_lang}")
+                        else:
+                            decoder = FFmpegDecoder()
+                            logger.info(f"🎤 STT session: {rate}Hz → {TARGET_SR}Hz via FFmpeg, lang={session_lang}")
                         if data.get("type") == "start_session":
                             logger.info(f"📋 Session ID: {data.get('session_id', 'unknown')}")
                         await decoder.start(rate)
@@ -321,6 +350,7 @@ async def ws_stt(ws: WebSocket):
                     # Auto-start ถ้ายังไม่ได้ init (fallback สำหรับ frontend เก่า)
                     if not is_started:
                         logger.warning(f"⚠️ Audio received before init, auto-starting with 44100Hz")
+                        decoder = FFmpegDecoder()
                         await decoder.start(44100)  # AudioContext default
                         asyncio.create_task(process_audio_queue())
                         is_started = True
@@ -341,7 +371,8 @@ async def ws_stt(ws: WebSocket):
     except Exception as e:
         logger.error(f"❌ STT WebSocket error: {e}", exc_info=True)
     finally:
-        await decoder.close()
+        if decoder:
+            await decoder.close()
         logger.info("🛑 STT session ended")
 
 def register_ws(app: FastAPI):

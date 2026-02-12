@@ -73,7 +73,7 @@ def _clean_gemma_output(text: str) -> str:
     """ลบขยะและแท็กที่มักหลุดมาจาก Gemma 3"""
     if not text: return ""
     # ลบแท็กทางเทคนิคและช่องว่างส่วนเกิน
-    text = re.sub(r'<(?:/)?(?:end_of_turn|pad||file|s|u)>', '', text)
+    text = re.sub(r'<(?:/)?(?:end_of_turn|pad|file|s|u)>', '', text)
     text = re.sub(r'\{\{.*?\}\}', '', text)
     return text.strip()
 
@@ -81,7 +81,8 @@ def _normalize_typos(s: str) -> str:
     out = s
     for k, v in _TH_FIX.items():
         out = out.replace(k, v)
-    out = re.sub(r"([ก-๙A-Za-z])\1+", r"\1", out)
+    # ลบอักขระซ้ำ 3+ ตัวขึ้นไป (เช่น "หมุนนน" → "หมุนน" แต่ "กรรไกร" คงเดิม)
+    out = re.sub(r"([ก-๙A-Za-z])\1{2,}", r"\1\1", out)
     return out
 
 def refine(text: str, lang_hint: str = "th") -> RefineResult:

@@ -1,14 +1,35 @@
 import re, math
 from typing import Optional, Dict, Any
 
-LINEAR_SPEED = 0.10  # m/s เดิน
-ANGULAR_SPEED = 0.3  # rad/s หมุน (ลดลงจาก 0.5 → 0.3 เพื่อความแม่นยำ myAGV 2023)
-ROTATION_CALIBRATION = 0.857  # ชดเชยการหมุนเกิน (90° สั่ง → 105° จริง, ใช้ 90/105 = 0.857)
+# ===== Elephant MyAGV 2023 (Jetson Nano) Default Parameters =====
+# Ref: Elephant Robotics myAGV 2023 Specs
+#   - Mecanum 4-wheel drive, wheel base ~0.105m
+#   - Max linear: 0.9 m/s, recommended: 0.15 m/s
+#   - Max angular: ~1.5 rad/s, recommended: 0.50 rad/s
+#   - Calibration: 0.85 (ชดเชย inertia ของ Mecanum wheel)
+LINEAR_SPEED = 0.15  # m/s (ค่า default ที่ปลอดภัยสำหรับ MyAGV 2023)
+ANGULAR_SPEED = 0.50  # rad/s (ค่า default ตาม spec ของ Elephant Robotics)
+ROTATION_CALIBRATION = 1.0   # จูนใหม่ที่ 0.50 rad/s (cal เดิม 0.85 วัดที่ 0.30 rad/s → undershoot)
 
 DIST_PAT = r"(\d+(?:\.\d+)?)\s*(?:กิโล(?:เมตร)?|km|เมตร|ม\.|ม|เซนติ(?:เมตร)?|cm|ซม|มิลลิ(?:เมตร)?|mm|มม)"
 TIME_PAT = r"(\d+(?:\.\d+)?)\s*(?:วินาที|วิ|นาที|sec|s)"
 DEG_PAT  = r"(\d+(?:\.\d+)?)\s*(?:องศา|degree|deg|ดีกรี)"
 ROUND_PAT = r"(\d+(?:\.\d+)?)\s*(?:รอบ|round|circle|เที่ยว)"  # เพิ่ม pattern รอบ
+
+# --- STT Text Normalization ---
+# Whisper Thai มักฟังคำว่า "เลี้ยว" เพี้ยนเป็นคำอื่นๆ
+_STT_FIXES = [
+    (r"เรียว", "เลี้ยว"),               # เรียวซ้าย → เลี้ยวซ้าย (common!)
+    (r"แล้ว\s*(ซ้าย|ขวา)", r"เลี้ยว\1"),  # แล้วซ้าย → เลี้ยวซ้าย
+    (r"เทิง|เทิน", "เดิน"),              # เทิงหน้า → เดินหน้า
+    (r"ถ่อย", "ถอย"),                    # ถ่อยหลัง → ถอยหลัง
+]
+
+def _normalize_stt(text: str) -> str:
+    """แก้คำที่ STT มักฟังผิดก่อนเข้า regex matcher"""
+    for pattern, replacement in _STT_FIXES:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
 
 def _parse_distance(text: str) -> Optional[float]:
     """แปลงระยะทางเป็นเมตร รองรับ: km, m, cm, mm"""
@@ -70,6 +91,9 @@ def parse_intent(text: str) -> Optional[Dict[str, Any]]:
     if not t:
         return None
     
+    # แก้คำเพี้ยนจาก STT ก่อนเข้า regex
+    t = _normalize_stt(t)
+    
     # 1. หยุด
     if re.search(r"(หยุด|พอ|สต็อป|stop)", t, re.IGNORECASE):
         return {"type": "stop"}
@@ -128,12 +152,12 @@ def parse_intent(text: str) -> Optional[Dict[str, Any]]:
         return {"type": "move", "linear_x": -LINEAR_SPEED, "angular_z": 0.0, "duration": dur}
     
     # 6. เลี้ยว/หมุน ซ้าย/ขวา (ระบุองศา หรือ default 90°)
-    if re.search(r"(หัน|เลี้ยว|หมุน|turn).*(ซ้าย|left)", t, re.IGNORECASE):
+    if re.search(r"(หัน|เลี้ยว|เรียว|หมุน|turn).*(ซ้าย|left)", t, re.IGNORECASE):
         rad = _parse_degree(t) or math.radians(90.0)  # default 90°
         dur = abs(rad) / ANGULAR_SPEED * ROTATION_CALIBRATION
         return {"type": "move", "linear_x": 0.0, "angular_z": +ANGULAR_SPEED, "duration": dur}
     
-    if re.search(r"(หัน|เลี้ยว|หมุน|turn).*(ขวา|right)", t, re.IGNORECASE):
+    if re.search(r"(หัน|เลี้ยว|เรียว|หมุน|turn).*(ขวา|right)", t, re.IGNORECASE):
         rad = _parse_degree(t) or math.radians(90.0)
         dur = abs(rad) / ANGULAR_SPEED * ROTATION_CALIBRATION
         return {"type": "move", "linear_x": 0.0, "angular_z": -ANGULAR_SPEED, "duration": dur}

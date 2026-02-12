@@ -44,6 +44,12 @@ WAKE_WORDS = [
     r"วัวล่า", r"วอล่า", r"โบรา", 
     r"โรล่า", r"โวล่า", r"โอร่า", r"โอรา",
     r"วอร์รา", r"โมว",
+    # คำเพี้ยนที่ STT มักฟังผิด (จาก logs จริง)
+    r"วอร่า",    # "วอร่าตรงไปข้างหน้า" ← very common
+    r"วอลล่า",   # "วอลล่าเลี้ยวซ้าย" (double ล)
+    r"งอล่า",   # "งอล่า เลี้ยวซ้าย"
+    r"กัวล่า",   # "กัวล่าเลี้ยวขวา"
+    r"โหล่า",    # "ฮัลโหล่า" → ตัด โหล่า
     r"ล่า", r"ล่ะ", r"ฮัลโหล"  # เพิ่มคำกลุ่มนี้เพื่อให้ดักจับง่ายขึ้น
 ]
 
@@ -165,8 +171,8 @@ async def execute_server_command(cmd: str, params: dict):
             distance = params.get("distance", 1)
             
             motion_map = {
-                "forward": {"type": "move", "linear_x": 0.1, "angular_z": 0.0, "duration": 2.0},
-                "backward": {"type": "move", "linear_x": -0.1, "angular_z": 0.0, "duration": 2.0},
+                "forward": {"type": "move", "linear_x": 0.15, "angular_z": 0.0, "duration": 2.0},
+                "backward": {"type": "move", "linear_x": -0.15, "angular_z": 0.0, "duration": 2.0},
             }
             
             motion_cmd = motion_map.get(direction)
@@ -179,13 +185,16 @@ async def execute_server_command(cmd: str, params: dict):
         elif cmd == "rotate":
             angle = params.get("angle", 90)
             
-            # Elephant myAGV 2023 specs:
-            # - Angular velocity: 0.3 rad/s (ช้าแต่แม่นกว่า)
-            # - Formula: duration = angle_rad / angular_z
+            # Elephant MyAGV 2023 (Jetson Nano) Default Rotation Config:
+            # - Angular velocity: 0.50 rad/s (factory default สำหรับ Mecanum wheel)
+            # - Calibration: 0.85 (ชดเชย inertia ของ 4-wheel Mecanum drive)
+            # - Formula: duration = (angle_rad / angular_z) * calibration
             import math
+            ROTATION_CALIBRATION = 1.0   # จูนใหม่ที่ 0.50 rad/s (cal เดิม 0.85 วัดที่ 0.30)
+            
             angle_rad = abs(angle) * (math.pi / 180)  # Convert degrees to radians
-            angular_z = 0.3  # rad/s (optimized for myAGV)
-            duration = angle_rad / angular_z
+            angular_z = 0.50  # rad/s (Elephant MyAGV 2023 factory default)
+            duration = (angle_rad / angular_z) * ROTATION_CALIBRATION
             
             motion_cmd = {
                 "type": "move",
@@ -194,7 +203,7 @@ async def execute_server_command(cmd: str, params: dict):
                 "duration": duration
             }
             
-            logger.info(f"🔄 Rotate {angle}° = {angle_rad:.2f} rad, duration={duration:.2f}s @ {angular_z} rad/s")
+            logger.info(f"🔄 Rotate {angle}° = {angle_rad:.2f} rad, duration={duration:.2f}s @ {angular_z} rad/s (cal={ROTATION_CALIBRATION})")
             
             if not MOCK_ROBOT:
                 await motion.exec_motion(motion_cmd)
@@ -380,7 +389,25 @@ async def gw_audio(ws: WebSocket):
             logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             # --------------------------------
 
-            # 1. ลองให้ LLM Planner (Server) คิดก่อน (เผื่อเป็นคำสั่งยากๆ เช่น "หาของ")
+            # ============================================================
+            # ลำดับการทำงาน:
+            # 1. Motion Parser (Regex) ก่อน → ส่ง /cmd_vel ตรง (เร็ว, ใช้ได้เลย)
+            # 2. LLM Planner ทีหลัง → ส่ง /move_base (Nav2, ต้องมี Nav2 stack)
+            # ============================================================
+
+            # 1. ลอง Motion Parser (Regex → /cmd_vel) ก่อน
+            logger.info(f"🎮 Trying Motion Parser...")
+            motion_cmd = parse_intent(text)
+            if motion_cmd:
+                logger.info(f"✅ Motion Intent Detected: {motion_cmd}")
+                if not MOCK_ROBOT:
+                    await motion.exec_motion(motion_cmd)
+                    logger.info("✅ Motion command executed via /cmd_vel")
+                else:
+                    logger.info(f"🤖 [MOCK] Would execute: {motion_cmd}")
+                return
+            
+            # 2. ถ้า Regex ไม่จับ → ลอง LLM Planner (สำหรับคำสั่งยากๆ เช่น "หาของ", "ไปที่โต๊ะ")
             if not MOCK_ROBOT:
                 logger.info(f"🧠 Trying LLM Planner...")
                 if await try_plan_and_execute(text, lang):
@@ -391,19 +418,8 @@ async def gw_audio(ws: WebSocket):
             else:
                 logger.info(f"🤖 [MOCK] Would call LLM Planner for: {text}")
             
-            # 2. ถ้า LLM ไม่รับ ให้ลองดูว่าเป็นคำสั่งเคลื่อนที่พื้นฐานไหม (Regex)
-            logger.info(f"🎮 Trying Motion Parser...")
-            motion_cmd = parse_intent(text)
-            if motion_cmd:
-                logger.info(f"✅ Motion Intent Detected: {motion_cmd}")
-                if not MOCK_ROBOT:
-                    await motion.exec_motion(motion_cmd)
-                    logger.info("✅ Motion command executed")
-                else:
-                    logger.info(f"🤖 [MOCK] Would execute: {motion_cmd}")
-            else:
-                logger.warning(f"❓ No matching command found for: '{text}'")
-                logger.warning(f"   Try: 'VORA เดินหน้า', 'VORA หยุด', 'VORA หาไขควง'")
+            logger.warning(f"❓ No matching command found for: '{text}'")
+            logger.warning(f"   Try: 'VORA เดินหน้า', 'VORA หยุด', 'VORA หาไขควง'")
 
     try:
         await upstream_stt_proxy(server_ws=f"{SERVER_WS}", client_ws=ws, upstream_init={"rate": rate, "lang": lang}, on_text=on_server_text)
@@ -440,14 +456,7 @@ async def gw_text(inp: TextIn):
     text = inp.text or ""
     lang = inp.lang or "th"
     
-    # 1. ลอง LLM Planner ก่อน
-    if not MOCK_ROBOT:
-        if await try_plan_and_execute(text, lang):
-            return {"ok": True, "mode": "planner"}
-    else:
-        logger.info(f"🤖 [MOCK] Would call LLM Planner for: {text}")
-    
-    # 2. ลอง Motion Parser
+    # 1. ลอง Motion Parser ก่อน (Regex → /cmd_vel ตรง, เร็ว)
     motion_cmd = parse_intent(text)
     if motion_cmd:
         if not MOCK_ROBOT:
@@ -456,5 +465,12 @@ async def gw_text(inp: TextIn):
         else:
             logger.info(f"🤖 [MOCK] Would execute motion: {motion_cmd}")
             return {"ok": True, "mode": "motion", "motion": motion_cmd, "mock": True}
+    
+    # 2. ถ้า Regex ไม่จับ → ลอง LLM Planner
+    if not MOCK_ROBOT:
+        if await try_plan_and_execute(text, lang):
+            return {"ok": True, "mode": "planner"}
+    else:
+        logger.info(f"🤖 [MOCK] Would call LLM Planner for: {text}")
     
     return {"ok": False, "reason": "no_motion_or_plan"}

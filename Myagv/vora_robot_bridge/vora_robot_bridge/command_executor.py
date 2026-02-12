@@ -218,8 +218,8 @@ class CommandExecutor(Node):
         if intent in ("move_forward", "move_backward", "turn_left", "turn_right", 
                       "strafe_left", "strafe_right"):
             duration = float(params.get("duration", 2.0))
-            speed = float(params.get("speed", 0.1))
-            angular_speed = float(params.get("angular_speed", 0.3))
+            speed = float(params.get("speed", 0.15))  # Elephant MyAGV 2023 default
+            angular_speed = float(params.get("angular_speed", 0.50))  # MyAGV 2023 factory default
             
             self.get_logger().info(f"[{intent.upper()}] query_id={self.active_query_id} duration={duration}s speed={speed}")
             

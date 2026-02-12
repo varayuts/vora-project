@@ -82,17 +82,19 @@ class MotionPublisher:
             
             await self._ensure_ros()
             
-            # ✅ FIX: Use loop count instead of time check for more reliable execution
             # Publish at 10Hz (every 0.1s) for the full duration
-            loop_count = int(duration / 0.1)
+            # round() แทน int() เพื่อไม่สูญเสีย fractional time (~0.05-0.09s)
+            loop_count = max(1, round(duration / 0.1))
             print(f"📡 Publishing {loop_count} messages at 10Hz for {duration}s")
             
             for i in range(loop_count):
                 self._topic.publish(self._twist(lx, az))
                 await asyncio.sleep(0.1)
             
-            # Stop command
-            self._topic.publish(self._twist(0.0, 0.0))
+            # Stop command — ส่งซ้ำ 3 ครั้ง (WebSocket→ROSBridge อาจ drop ได้)
+            for _ in range(3):
+                self._topic.publish(self._twist(0.0, 0.0))
+                await asyncio.sleep(0.05)
             print(f"✅ Motion completed: {loop_count} messages sent")
             return True
         return False
@@ -138,15 +140,23 @@ class WaypointSender:
             goal.cancel()
             await asyncio.sleep(0.2)
 
+# Singleton ROS connection สำหรับ LLM Planner (ป้องกัน connection leak)
+_shared_ros: roslibpy.Ros = None
+
 async def ensure_ros(rosbridge_url: str) -> roslibpy.Ros:
+    """Singleton ROS connection — ป้องกัน connection leak ที่ทำให้ delay สะสม"""
+    global _shared_ros
+    if _shared_ros and _shared_ros.is_connected:
+        return _shared_ros
     host_port = rosbridge_url.replace("ws://","").split("/")[0]
     host, port = host_port.split(":")
-    ros = roslibpy.Ros(host=host, port=int(port))
-    ros.run()
+    _shared_ros = roslibpy.Ros(host=host, port=int(port))
+    _shared_ros.run()
     for _ in range(50):
-        if ros.is_connected:
+        if _shared_ros.is_connected:
             break
         await asyncio.sleep(0.1)
-    if not ros.is_connected:
+    if not _shared_ros.is_connected:
+        _shared_ros = None
         raise RuntimeError("Cannot connect to rosbridge")
-    return ros
+    return _shared_ros

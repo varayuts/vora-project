@@ -12,9 +12,14 @@ class AutoMotionTest(Node):
         super().__init__("myagv_auto_motion_test")
         self.pub = self.create_publisher(Twist, "/cmd_vel", 10)
 
-        # ปรับได้ตามต้องการ
-        self.linear_speed = 0.20   # m/s
-        self.angular_speed = 0.80  # rad/s
+        # ===== Elephant MyAGV 2023 (Jetson Nano) Default Values =====
+        # จาก Elephant Robotics specification:
+        #   - Max linear speed: 0.9 m/s (แต่ใช้จริงไม่ควรเกิน 0.3)
+        #   - Max angular speed: ~1.5 rad/s (แต่ใช้จริง 0.5 เหมาะสมที่สุด)
+        #   - Wheel base: 0.105 m (mecanum 4-wheel)
+        self.linear_speed = 0.15   # m/s (ค่าปลอดภัยสำหรับทดสอบ)
+        self.angular_speed = 0.50  # rad/s (ค่า default ที่แม่นยำสำหรับ MyAGV 2023)
+        self.rotation_calibration = 1.0   # จูนใหม่ที่ 0.50 rad/s (cal เดิม 0.85 วัดที่ 0.30)
         self.hz = 20.0             # publish rate
         self.dt = 1.0 / self.hz
 
@@ -38,9 +43,10 @@ class AutoMotionTest(Node):
             time.sleep(self.dt)
 
     def spin_360(self, direction: int = +1):
-        # duration = 2*pi / |w|
+        # duration = (2*pi / |w|) * calibration
+        # calibration ชดเชยการหมุนเกินจาก momentum ของ Mecanum wheel
         w = self.angular_speed * (1 if direction >= 0 else -1)
-        duration = (2.0 * math.pi) / abs(w)
+        duration = (2.0 * math.pi) / abs(w) * self.rotation_calibration
         self.run_for(0.0, w, duration)
 
     def sequence(self):

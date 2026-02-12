@@ -95,7 +95,7 @@ Examples:
     parser.add_argument("--gateway-ws", required=True, help="Gateway WebSocket URL (e.g. ws://GATEWAY_IP:9001/gw/audio)")
     parser.add_argument("--lang", default="th", help="Language hint for STT (default: th)")
     parser.add_argument("--rate", type=int, default=16000, help="Target sample rate in Hz (default: 16000)")
-    parser.add_argument("--frames", type=int, default=512, help="Frames per chunk - SMALLER = LOWER LATENCY (default: 512)")
+    parser.add_argument("--frames", type=int, default=2048, help="Frames per chunk (default: 2048 = 128ms @16kHz)")
     parser.add_argument("--device", default=None, help='Input device name substring (e.g. "ReSpeaker", "Yeti GX")')
     parser.add_argument("--silence-threshold", type=int, default=400, help="RMS threshold for silence detection (default: 400)")
     parser.add_argument("--silence-duration", type=float, default=60.0, help="Seconds of silence before auto-stop (default: 60.0)")
@@ -113,6 +113,15 @@ Examples:
     device_sample_rate = get_device_sample_rate(device_index, args.rate)
     target_rate = args.rate  # Rate expected by Gateway (16000)
     need_resample = device_sample_rate != target_rate
+    
+    # Pre-compute resample factors for resample_poly (faster than FFT-based resample)
+    # resample_poly uses polyphase FIR — much lighter CPU on Jetson Nano
+    resample_up, resample_down = 1, 1
+    if need_resample:
+        from math import gcd
+        _g = gcd(target_rate, device_sample_rate)
+        resample_up = target_rate // _g
+        resample_down = device_sample_rate // _g
     
     # Silence detection settings
     silence_threshold = args.silence_threshold
@@ -147,7 +156,7 @@ Examples:
         print(f"[WARN] Could not get device info: {e}")
         print(f"[INFO] Using default input device")
 
-    audio_q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    audio_q: asyncio.Queue = asyncio.Queue(maxsize=500)
     silent_chunks = 0
     total_chunks = 0
 
@@ -163,12 +172,9 @@ Examples:
         # Get mono audio
         mono_audio = indata[:, 0]
         
-        # Resample if needed
+        # Resample if needed (resample_poly = polyphase FIR, faster than FFT on Jetson Nano)
         if need_resample:
-            # Calculate target number of samples
-            num_samples_out = int(len(mono_audio) * target_rate / device_sample_rate)
-            # Resample using scipy
-            mono_audio = signal.resample(mono_audio, num_samples_out)
+            mono_audio = signal.resample_poly(mono_audio, resample_up, resample_down)
         
         # Silence detection
         if silence_enabled:
