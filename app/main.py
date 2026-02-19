@@ -17,6 +17,7 @@ from .api.plan_router import router as plan_router
 from .api.robot_planner import router as robot_planner_router
 from .api.pipeline_router import router as pipeline_router
 from .api.server_router import router as server_router  # Server APIs (TTS gTTS, Queue, State)   
+from .api.vlm_router import router as vlm_router        # VLM Vision endpoints (Qwen3-VL)
 
 # ตั้งค่า Logger เพื่อดูสถานะการโหลดโมเดลใน A6000
 logging.basicConfig(level=logging.INFO)
@@ -146,6 +147,7 @@ app.include_router(plan_router,    prefix="",         tags=["Plan"])     # plan_
 app.include_router(robot_planner_router, prefix="",   tags=["Robot"])   # robot_planner มี prefix="/robot" แล้ว
 app.include_router(pipeline_router)  # /pipeline/* endpoints
 app.include_router(server_router)    # /api/server/* endpoints (TTS gTTS, Queue, State)
+app.include_router(vlm_router)       # /vlm/* endpoints (Qwen3-VL image understanding)
 
 # ลงทะเบียน WebSocket STT หลัง HTTP routes
 register_ws(app)

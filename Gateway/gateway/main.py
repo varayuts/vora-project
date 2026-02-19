@@ -9,6 +9,7 @@ import websockets
 from gateway.audio_proxy import upstream_stt_proxy
 from gateway.intent_parser import parse_intent
 from gateway.ros_cmd import MotionPublisher, WaypointSender, ensure_ros, GOAL_FRAME, USE_ACTION
+from gateway.obstacle_avoidance import ObstacleAvoidance
 
 # Setup logging with colors
 logging.basicConfig(
@@ -242,12 +243,22 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 motion = MotionPublisher(rosbridge_url=ROSBRIDGE, cmd_vel_topic=CMD_VEL)
 _way_sender = WaypointSender()
+_obstacle_avoidance = ObstacleAvoidance(motion_publisher=motion, rosbridge_url=ROSBRIDGE)
 
 @app.on_event("startup")
 async def startup_event():
     """Start Gateway → Server connection when app starts"""
     asyncio.create_task(connect_to_server())
     logger.info("🚀 Gateway startup: Server connection task started")
+    
+    # Start obstacle avoidance (LiDAR subscriber)
+    if not MOCK_ROBOT:
+        try:
+            ros = await ensure_ros(ROSBRIDGE)
+            await _obstacle_avoidance.start(ros)
+            logger.info("✅ Obstacle avoidance active")
+        except Exception as e:
+            logger.warning(f"⚠️ Obstacle avoidance not started (ROSBridge unavailable): {e}")
 
 @app.get("/")
 async def root():
@@ -286,6 +297,31 @@ async def test_server():
             return {"ok": True, "status": r.status_code, "data": r.json()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@app.get("/obstacle/status")
+async def obstacle_status():
+    """Get current obstacle avoidance status (LiDAR + VLM)"""
+    return _obstacle_avoidance.get_status()
+
+@app.post("/obstacle/check")
+async def obstacle_check():
+    """Manually trigger obstacle check and get avoidance strategy"""
+    result = await _obstacle_avoidance.check_and_avoid()
+    if result is None:
+        return {"obstacle_detected": False, "message": "Path is clear"}
+    return result
+
+@app.post("/obstacle/enable")
+async def obstacle_enable():
+    """Enable obstacle avoidance"""
+    _obstacle_avoidance._enabled = True
+    return {"enabled": True}
+
+@app.post("/obstacle/disable")
+async def obstacle_disable():
+    """Disable obstacle avoidance"""
+    _obstacle_avoidance._enabled = False
+    return {"enabled": False}
 
 from pydantic import BaseModel
 
@@ -400,6 +436,21 @@ async def gw_audio(ws: WebSocket):
             motion_cmd = parse_intent(text)
             if motion_cmd:
                 logger.info(f"✅ Motion Intent Detected: {motion_cmd}")
+                
+                # Check for obstacles before moving forward
+                if not MOCK_ROBOT and motion_cmd.get("linear_x", 0) > 0:
+                    obs = await _obstacle_avoidance.check_and_avoid()
+                    if obs and obs.get("obstacle_detected"):
+                        logger.warning(f"🚧 Obstacle blocking forward motion! Strategy: {obs.get('strategy')}")
+                        await manager.broadcast(json.dumps({
+                            "type": "obstacle",
+                            "distance": obs.get("distance"),
+                            "strategy": obs.get("strategy"),
+                            "obstacle_type": obs.get("obstacle_type", "unknown"),
+                        }))
+                        await _obstacle_avoidance.execute_avoidance(obs["strategy"])
+                        return
+                
                 if not MOCK_ROBOT:
                     await motion.exec_motion(motion_cmd)
                     logger.info("✅ Motion command executed via /cmd_vel")

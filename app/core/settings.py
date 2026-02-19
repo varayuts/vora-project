@@ -14,7 +14,8 @@ class Settings:
     OLLAMA_REFINE_MODEL: str = os.getenv("OLLAMA_REFINE_MODEL", "gemma3:12b-it-qat")
     
     # VLM for Vision tasks (navigation, object finding)
-    OLLAMA_VLM_MODEL: str = os.getenv("OLLAMA_VLM_MODEL", "gemma3n:e4b")
+    # Qwen3-VL:8B — 6.1GB, 256K context, 32 languages, spatial understanding
+    OLLAMA_VLM_MODEL: str = os.getenv("OLLAMA_VLM_MODEL", "qwen3-vl:8b")
     
     # Search: DISABLED - จะใช้ RAG แทนในอนาคต
 

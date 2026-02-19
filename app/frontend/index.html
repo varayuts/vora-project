@@ -430,6 +430,7 @@
             <option value="manual-llm">🖐️ Manual</option>
         </select>
         <div id="mic-status" class="status-pill offline">🎤 Mic OFF</div>
+        <button class="small" id="btn-vlm-toggle" onclick="toggleVLMVisibility()" style="background: rgba(88,166,255,0.15); border: 1px solid var(--accent); color: var(--accent); padding: 6px 12px; border-radius: 8px; font-size: 11px; cursor: pointer;">📸 VLM</button>
         <div id="conn-status" class="status-pill offline">🔴 Not Connected</div>
     </div>
 </header>
@@ -524,6 +525,51 @@
     
     <!-- Main Chat Area -->
     <div class="chat-area">
+        <!-- VLM Image Panel (collapsible) -->
+        <div id="vlm-panel" style="border-bottom: 1px solid var(--border); display: none;">
+            <div style="padding: 12px 16px; background: rgba(88,166,255,0.05); cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleVLMPanel()">
+                <span style="font-size: 13px; font-weight: 600; color: var(--accent);">📸 VLM Vision (Qwen3-VL:8B)</span>
+                <span id="vlm-toggle-icon" style="color: var(--text-secondary);">▼</span>
+            </div>
+            <div id="vlm-content" style="display: none; padding: 12px 16px;">
+                <!-- Image Gallery -->
+                <div style="margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">🖼️ Test Images</span>
+                        <button class="small" onclick="loadVLMImages()" style="font-size: 10px;">🔄 Refresh</button>
+                    </div>
+                    <div id="vlm-gallery" style="display: flex; gap: 8px; overflow-x: auto; padding: 4px 0;">
+                        <span style="color: var(--text-secondary); font-size: 12px;">Loading images...</span>
+                    </div>
+                </div>
+                
+                <!-- Selected Image Preview -->
+                <div id="vlm-preview-container" style="display: none; margin-bottom: 12px; text-align: center;">
+                    <img id="vlm-preview" style="max-height: 200px; max-width: 100%; border-radius: 8px; border: 1px solid var(--border);" />
+                    <div id="vlm-preview-name" style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;"></div>
+                </div>
+                
+                <!-- VLM Query Controls -->
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <select id="vlm-action" style="flex: 1; min-width: 120px; padding: 8px; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 12px;">
+                        <option value="describe">📝 อธิบายภาพ</option>
+                        <option value="find">🔍 หาสิ่งของ</option>
+                        <option value="ask">❓ ถามเกี่ยวกับภาพ</option>
+                        <option value="obstacle">🚧 วิเคราะห์สิ่งกีดขวาง</option>
+                    </select>
+                    <input id="vlm-query-input" type="text" placeholder="ชื่อสิ่งของ / คำถาม..." 
+                           style="flex: 2; padding: 8px; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 12px;"
+                           onkeypress="if(event.key==='Enter') sendVLMQuery()">
+                    <button class="small" onclick="sendVLMQuery()" style="background: rgba(88,166,255,0.3); font-size: 12px; padding: 8px 14px;">📸 ส่ง</button>
+                </div>
+                
+                <!-- VLM Result -->
+                <div id="vlm-result" style="display: none; margin-top: 10px; padding: 10px; background: rgba(13,17,23,0.6); border-radius: 8px; border: 1px solid var(--border); font-size: 12px; color: var(--text-primary); max-height: 150px; overflow-y: auto;"></div>
+                
+                <!-- VLM Status -->
+                <div id="vlm-status" style="margin-top: 6px; font-size: 10px; color: var(--text-secondary);"></div>
+            </div>
+        </div>
         <div id="chat-history">
             <div class="msg vora">ยินดีต้อนรับครับ! 👋<br>ผม <b>VORA</b> - Voice Oriented Robotics Assistant 🚀<br><br>
             <b>📱 วิธีใช้:</b><br>
@@ -1655,6 +1701,216 @@
     } else {
         console.error('❌ Settings elements not found!');
     }
+    // ======================== VLM VISION PANEL ========================
+    let vlmSelectedImage = null;
+    let vlmPanelVisible = false;
+    let vlmContentOpen = false;
+    
+    function toggleVLMVisibility() {
+        const panel = document.getElementById('vlm-panel');
+        vlmPanelVisible = !vlmPanelVisible;
+        panel.style.display = vlmPanelVisible ? 'block' : 'none';
+        
+        if (vlmPanelVisible && !vlmContentOpen) {
+            // Auto-open content and load images on first show
+            toggleVLMPanel();
+            loadVLMImages();
+        }
+        
+        // Update button style
+        const btn = document.getElementById('btn-vlm-toggle');
+        if (btn) {
+            btn.style.background = vlmPanelVisible ? 'rgba(88,166,255,0.35)' : 'rgba(88,166,255,0.15)';
+        }
+    }
+    
+    function toggleVLMPanel() {
+        const content = document.getElementById('vlm-content');
+        const icon = document.getElementById('vlm-toggle-icon');
+        vlmContentOpen = !vlmContentOpen;
+        content.style.display = vlmContentOpen ? 'block' : 'none';
+        icon.textContent = vlmContentOpen ? '▲' : '▼';
+    }
+    
+    async function loadVLMImages() {
+        const gallery = document.getElementById('vlm-gallery');
+        const statusDiv = document.getElementById('vlm-status');
+        
+        try {
+            statusDiv.textContent = '⏳ Loading images...';
+            const resp = await fetch(`${API_BASE}/vlm/images`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            
+            if (!data.images || data.images.length === 0) {
+                gallery.innerHTML = '<span style="color: var(--warn); font-size: 12px;">📂 No images found in Images/ folder</span>';
+                statusDiv.textContent = '⚠️ Upload images via FileZilla to Images/';
+                return;
+            }
+            
+            gallery.innerHTML = '';
+            data.images.forEach(img => {
+                const thumb = document.createElement('div');
+                thumb.style.cssText = 'flex-shrink: 0; cursor: pointer; border-radius: 6px; overflow: hidden; border: 2px solid transparent; transition: all 0.2s;';
+                thumb.innerHTML = `
+                    <img src="${API_BASE}${img.url}" 
+                         style="width: 80px; height: 60px; object-fit: cover; display: block;" 
+                         alt="${img.filename}" title="${img.filename} (${img.size_kb}KB)" />
+                    <div style="font-size: 9px; color: var(--text-secondary); text-align: center; padding: 2px; background: var(--bg-dark);">${img.filename}</div>
+                `;
+                thumb.onclick = () => selectVLMImage(img.filename, `${API_BASE}${img.url}`, thumb);
+                gallery.appendChild(thumb);
+            });
+            
+            statusDiv.textContent = `✅ ${data.count} images loaded`;
+        } catch (err) {
+            console.error('VLM images error:', err);
+            gallery.innerHTML = `<span style="color: var(--danger); font-size: 12px;">❌ ${err.message}</span>`;
+            statusDiv.textContent = `❌ Failed to load images`;
+        }
+    }
+    
+    function selectVLMImage(filename, url, thumbEl) {
+        vlmSelectedImage = filename;
+        
+        // Update preview
+        const preview = document.getElementById('vlm-preview');
+        const previewContainer = document.getElementById('vlm-preview-container');
+        const previewName = document.getElementById('vlm-preview-name');
+        
+        preview.src = url;
+        previewName.textContent = filename;
+        previewContainer.style.display = 'block';
+        
+        // Highlight selected thumbnail
+        document.querySelectorAll('#vlm-gallery > div').forEach(el => {
+            el.style.borderColor = 'transparent';
+        });
+        if (thumbEl) {
+            thumbEl.style.borderColor = 'var(--accent)';
+        }
+    }
+    
+    async function sendVLMQuery() {
+        if (!vlmSelectedImage) {
+            alert('เลือกรูปภาพก่อนครับ');
+            return;
+        }
+        
+        const action = document.getElementById('vlm-action').value;
+        const queryInput = document.getElementById('vlm-query-input');
+        const resultDiv = document.getElementById('vlm-result');
+        const statusDiv = document.getElementById('vlm-status');
+        
+        let endpoint, body;
+        
+        switch (action) {
+            case 'describe':
+                endpoint = '/vlm/describe';
+                body = { image: vlmSelectedImage };
+                break;
+            case 'find':
+                if (!queryInput.value.trim()) { alert('พิมพ์ชื่อสิ่งของที่ต้องการหาครับ'); return; }
+                endpoint = '/vlm/find-object';
+                body = { image: vlmSelectedImage, object_name: queryInput.value.trim() };
+                break;
+            case 'ask':
+                if (!queryInput.value.trim()) { alert('พิมพ์คำถามเกี่ยวกับภาพครับ'); return; }
+                endpoint = '/vlm/understand';
+                body = { image: vlmSelectedImage, prompt: queryInput.value.trim() };
+                break;
+            case 'obstacle':
+                endpoint = '/vlm/obstacle';
+                body = { image: vlmSelectedImage, current_goal: queryInput.value.trim() || '' };
+                break;
+        }
+        
+        statusDiv.textContent = '⏳ กำลังวิเคราะห์ด้วย Qwen3-VL:8B...';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<span style="color: var(--accent);">🧠 Processing...</span>';
+        
+        const startTime = Date.now();
+        
+        try {
+            const resp = await fetch(`${API_BASE}${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(`HTTP ${resp.status}: ${errText}`);
+            }
+            
+            const data = await resp.json();
+            
+            let html = '';
+            
+            if (action === 'find' && data.found !== undefined) {
+                const emoji = data.found ? '✅' : '❌';
+                html += `<div style="font-weight: 600; margin-bottom: 6px;">${emoji} ${data.found ? 'พบ' : 'ไม่พบ'}: <span style="color: var(--accent);">${data.object || queryInput.value}</span></div>`;
+            }
+            
+            if (action === 'obstacle' && data.strategy) {
+                const strategyEmoji = {
+                    'go_around_left': '⬅️ เลี่ยงซ้าย',
+                    'go_around_right': '➡️ เลี่ยงขวา',
+                    'wait': '⏸️ รอ',
+                    'reroute': '🗺️ เปลี่ยนเส้นทาง',
+                    'stop': '🛑 หยุด'
+                };
+                html += `<div style="font-weight: 600; margin-bottom: 6px;">🚧 สิ่งกีดขวาง: <span style="color: var(--warn);">${data.obstacle_type || 'unknown'}</span></div>`;
+                html += `<div style="margin-bottom: 6px;">📋 แนะนำ: <span style="color: var(--accent);">${strategyEmoji[data.strategy] || data.strategy}</span></div>`;
+                if (data.reason) html += `<div style="font-size: 11px; color: var(--text-secondary);">💡 ${data.reason}</div>`;
+            }
+            
+            if (data.text) {
+                html += `<div style="margin-top: ${html ? '8px' : '0'}; line-height: 1.5;">${data.text}</div>`;
+            }
+            
+            if (data.eval_duration_ms) {
+                html += `<div style="margin-top: 6px; font-size: 10px; color: var(--text-secondary);">⚡ VLM: ${data.eval_duration_ms}ms | Total: ${elapsed}s | Model: ${data.model || 'qwen3-vl:8b'}</div>`;
+            }
+            
+            resultDiv.innerHTML = html || '<span style="color: var(--warn);">ไม่มีผลลัพธ์</span>';
+            statusDiv.textContent = `✅ เสร็จใน ${elapsed}s`;
+            
+            // Also show in chat
+            if (data.text) {
+                const actionLabel = { describe: '📝 อธิบายภาพ', find: '🔍 หาสิ่งของ', ask: '❓ ถามภาพ', obstacle: '🚧 สิ่งกีดขวาง' }[action];
+                addMsg('vora', `${actionLabel} [${vlmSelectedImage}]:<br>${data.text}`, null, 'info');
+            }
+            
+        } catch (err) {
+            console.error('VLM query error:', err);
+            resultDiv.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            statusDiv.textContent = `❌ Error`;
+        }
+    }
+    
+    // VLM action change — show/hide query input
+    document.getElementById('vlm-action').addEventListener('change', function() {
+        const input = document.getElementById('vlm-query-input');
+        switch (this.value) {
+            case 'describe':
+                input.placeholder = '(ไม่ต้องพิมพ์ - อธิบายทั้งภาพ)';
+                input.value = '';
+                break;
+            case 'find':
+                input.placeholder = 'ชื่อสิ่งของ เช่น ปากกา, กระเป๋า...';
+                break;
+            case 'ask':
+                input.placeholder = 'คำถาม เช่น มีสิ่งของกี่ชิ้น?';
+                break;
+            case 'obstacle':
+                input.placeholder = 'จุดหมาย (optional) เช่น ไปหาไขควง';
+                break;
+        }
+    });
+    
 </script>
 
 </body>
