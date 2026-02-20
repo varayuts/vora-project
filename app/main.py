@@ -18,6 +18,7 @@ from .api.robot_planner import router as robot_planner_router
 from .api.pipeline_router import router as pipeline_router
 from .api.server_router import router as server_router  # Server APIs (TTS gTTS, Queue, State)   
 from .api.vlm_router import router as vlm_router        # VLM Vision endpoints (Qwen3-VL)
+from .api.camera_router import router as camera_router  # Camera proxy from Gateway
 
 # ตั้งค่า Logger เพื่อดูสถานะการโหลดโมเดลใน A6000
 logging.basicConfig(level=logging.INFO)
@@ -148,6 +149,7 @@ app.include_router(robot_planner_router, prefix="",   tags=["Robot"])   # robot_
 app.include_router(pipeline_router)  # /pipeline/* endpoints
 app.include_router(server_router)    # /api/server/* endpoints (TTS gTTS, Queue, State)
 app.include_router(vlm_router)       # /vlm/* endpoints (Qwen3-VL image understanding)
+app.include_router(camera_router)    # /camera/* endpoints (Camera proxy from Gateway)
 
 # ลงทะเบียน WebSocket STT หลัง HTTP routes
 register_ws(app)
@@ -171,11 +173,19 @@ if os.path.exists(frontend_dir):
     @app.get("/app")
     @app.get("/app/")
     async def serve_app():
-        """Serve the main web app (index.html)"""
+        """Serve the main web app (index.html) — no cache"""
         index_path = os.path.join(frontend_dir, "index.html")
         if os.path.exists(index_path):
             logger.info(f"📄 Serving index.html from {index_path}")
-            return FileResponse(index_path)
+            return FileResponse(
+                index_path,
+                media_type="text/html",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                }
+            )
         else:
             logger.error(f"❌ index.html not found at {index_path}")
             return {"error": "Frontend index.html not found", "path": index_path}

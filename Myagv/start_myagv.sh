@@ -6,6 +6,9 @@
 
 set -e
 
+# Resolve script directory (works even when called from another dir)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ============================================================
 # Color output
 # ============================================================
@@ -42,7 +45,7 @@ print_info() {
 # ============================================================
 GATEWAY_IP="${1:-}"
 AUDIO_DEVICE="ReSpeaker"
-ROS2_WS="${HOME}/ros2_ws"
+ROS2_WS="${HOME}/vora_ws"
 
 print_header "🤖 VORA MyAGV Startup"
 
@@ -172,11 +175,12 @@ fi
 # ============================================================
 print_header "🚀 Starting Services"
 
-print_info "This will open 4 terminals:"
+print_info "This will open 5 terminals:"
 echo "  0. MyAGV Hardware Driver (motor control)"
 echo "  1. ROSBridge WebSocket (port 9090)"
-echo "  2. VORA Command Executor (ROS2 node)"
-echo "  3. Audio Stream Client (to Gateway)"
+echo "  2. Camera Publisher (OpenCV direct → /camera/compressed)"
+echo "  3. VORA Command Executor (ROS2 node)"
+echo "  4. Audio Stream Client (to Gateway)"
 echo ""
 read -p "Press Enter to continue..."
 
@@ -210,7 +214,27 @@ gnome-terminal --title="VORA: ROSBridge" -- bash -c "
 " &
 sleep 2
 
-# Terminal 2: Command Executor
+# Terminal 2: Camera Publisher (OpenCV direct — replaces usb_cam which segfaults on Jetson)
+print_info "Starting Camera Publisher in new terminal..."
+gnome-terminal --title="VORA: Camera" -- bash -c "
+    echo '══════════════════════════════════════════════════════════';
+    echo '📷 Camera Publisher (OpenCV → /camera/compressed + /image_raw/compressed)';
+    echo '══════════════════════════════════════════════════════════';
+    echo 'Device: /dev/video0';
+    echo 'Log:    /tmp/vora_camera.log';
+    echo '══════════════════════════════════════════════════════════';
+    source /opt/ros/galactic/setup.bash;
+    echo '[INFO] Starting ros_camera_pub.py ...';
+    python3 $SCRIPT_DIR/ros_camera_pub.py 2>&1 | tee /tmp/vora_camera.log;
+    echo '';
+    echo '══ Camera exited. Check /tmp/vora_camera.log for errors ══';
+    echo 'Press Enter to close...';
+    read _;
+    exec bash
+" &
+sleep 3
+
+# Terminal 3: Command Executor
 print_info "Starting Command Executor in new terminal..."
 gnome-terminal --title="VORA: Command Executor" -- bash -c "
     echo '══════════════════════════════════════════════════════════';
@@ -223,7 +247,7 @@ gnome-terminal --title="VORA: Command Executor" -- bash -c "
 " &
 sleep 2
 
-# Terminal 3: Audio Client
+# Terminal 4: Audio Client
 print_info "Starting Audio Client in new terminal..."
 GATEWAY_WS="ws://${GATEWAY_IP}:9001/gw/audio"
 gnome-terminal --title="VORA: Audio Stream" -- bash -c "
@@ -235,8 +259,8 @@ gnome-terminal --title="VORA: Audio Stream" -- bash -c "
     echo 'Auto-detecting sample rate...';
     echo '══════════════════════════════════════════════════════════';
     sleep 3;
-    cd $(dirname $0);
-    python3 send_audio_to_gateway.py \
+    cd $SCRIPT_DIR;
+    python3 $SCRIPT_DIR/send_audio_to_gateway.py \
         --gateway-ws '$GATEWAY_WS' \
         --device '$AUDIO_DEVICE';
     exec bash
@@ -251,13 +275,16 @@ print_header "✅ All Services Started"
 
 echo ""
 print_success "ROSBridge:         ws://192.168.0.111:9090"
+print_success "Camera:            /camera/compressed (JPEG ~30-80KB, 15fps)"
 print_success "Command Executor:  Listening on /vora/command"
 print_success "Audio Stream:      $GATEWAY_WS"
 echo ""
 print_info "Check terminal windows for service status"
 print_info "Press Ctrl+C in terminals to stop services"
+print_info "Gateway should subscribe to /camera/compressed (sensor_msgs/CompressedImage)"
 echo ""
 print_warning "To stop all services:"
+echo "  pkill -f ros_camera_pub"
 echo "  pkill -f rosbridge"
 echo "  pkill -f command_executor"
 echo "  pkill -f send_audio_to_gateway"

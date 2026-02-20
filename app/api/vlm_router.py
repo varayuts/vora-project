@@ -9,12 +9,14 @@ Prefix: /vlm
 import os
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from pydantic import BaseModel
 
 from ..providers.llm.qwen_vlm import (
     understand_image,
+    understand_image_bytes,
     find_object,
+    find_object_bytes,
     describe_scene,
     analyze_obstacle,
     check_vlm_health,
@@ -62,9 +64,19 @@ class DescribeRequest(BaseModel):
     lang: str = "th"
 
 
+class LiveDescribeRequest(BaseModel):
+    prompt: str = ""                    # optional custom prompt
+    lang: str = "th"
+
+
 class ObstacleRequest(BaseModel):
     image: str                          # filename in Images/ folder
     current_goal: str = ""              # e.g. "ไปหาไขควง"
+    lang: str = "th"
+
+
+class FindObjectLiveRequest(BaseModel):
+    object_name: str                    # e.g. "กุญแจ", "ปากกา"
     lang: str = "th"
 
 
@@ -152,6 +164,55 @@ async def vlm_describe(req: DescribeRequest):
     return {"status": "ok", **result}
 
 
+@router.post("/describe-live")
+async def vlm_describe_live(req: LiveDescribeRequest):
+    """
+    Describe the current camera frame in realtime (no capture needed).
+    Uses the in-memory frame from camera push.
+
+    Example:
+        POST /vlm/describe-live
+        {}                             → describe scene in Thai
+        {"prompt": "มีคนกี่คน?"}      → custom question
+    """
+    from ..api.camera_router import _frame
+
+    if _frame is None:
+        raise HTTPException(status_code=503, detail="No camera frame available")
+
+    if req.prompt:
+        prompt = req.prompt
+    elif req.lang == "th":
+        prompt = "ภาพนี้มีสิ่งของอะไรบ้าง แต่ละอย่างอยู่ตำแหน่งไหน?"
+    else:
+        prompt = "What objects are in this image and where is each one positioned?"
+
+    logger.info(f"📸 /vlm/describe-live: prompt={prompt[:60]}, frame={len(_frame)} bytes")
+    result = await understand_image_bytes(_frame, prompt, req.lang)
+    return {"status": "ok", "live": True, **result}
+
+
+@router.post("/find-object-live")
+async def vlm_find_object_live(req: FindObjectLiveRequest):
+    """
+    🔍 Find a specific object in the current camera frame (no capture needed).
+    Used by Gateway visual search loop.
+
+    Example:
+        POST /vlm/find-object-live
+        {"object_name": "กุญแจ"}
+        → {"found": true, "location": "center", "description": "..."}
+    """
+    from ..api.camera_router import _frame
+
+    if _frame is None:
+        raise HTTPException(status_code=503, detail="No camera frame available")
+
+    logger.info(f"🔍 /vlm/find-object-live: object={req.object_name}, frame={len(_frame)} bytes")
+    result = await find_object_bytes(_frame, req.object_name, req.lang)
+    return {"status": "ok", "live": True, **result}
+
+
 @router.post("/obstacle")
 async def vlm_obstacle(req: ObstacleRequest):
     """
@@ -172,6 +233,39 @@ async def vlm_obstacle(req: ObstacleRequest):
     logger.info(f"🚧 /vlm/obstacle: image={req.image}, goal={req.current_goal}")
     result = await analyze_obstacle(path, req.current_goal, req.lang)
     return {"status": "ok", **result}
+
+
+@router.post("/describe-bytes")
+async def vlm_describe_bytes(
+    request: Request,
+    prompt: str = "",
+    lang: str = "th",
+    max_tokens: int = 200,
+):
+    """
+    Describe an image sent as raw JPEG bytes in the request body.
+    Used by Gateway for task-triggered VLM checks — bypasses the cached
+    camera frame so VLM always sees the freshest frame right after an action.
+
+    Example (from Gateway):
+        POST /vlm/describe-bytes?prompt=...&lang=th
+        Content-Type: image/jpeg
+        <raw jpeg bytes>
+    """
+    frame = await request.body()
+    if not frame:
+        raise HTTPException(status_code=400, detail="No image bytes in body")
+
+    if not prompt:
+        prompt = (
+            "ภาพนี้มีสิ่งของอะไรบ้าง แต่ละอย่างอยู่ตำแหน่งไหน (ซ้าย/ขวา/กลาง/ใกล้/ไกล)?"
+            if lang == "th"
+            else "What objects are in this image and where is each one positioned?"
+        )
+
+    logger.info(f"📸 /vlm/describe-bytes: frame={len(frame)} bytes, prompt={prompt[:60]}")
+    result = await understand_image_bytes(frame, prompt, lang, max_tokens=max_tokens)
+    return {"status": "ok", "live": True, **result}
 
 
 @router.post("/upload")

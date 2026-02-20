@@ -82,6 +82,13 @@ class MotionPublisher:
             
             await self._ensure_ros()
             
+            # Minimum rotation duration — small angles (<15°) produce <0.3s
+            # which is too short for Mecanum wheels to respond via WebSocket.
+            MIN_ROTATE_DUR = 0.5  # seconds (5 messages minimum for rotation)
+            if abs(az) > 0.01 and abs(lx) < 0.01 and duration < MIN_ROTATE_DUR:
+                print(f"⚡ Rotation boosted: {duration:.2f}s → {MIN_ROTATE_DUR}s (min)")
+                duration = MIN_ROTATE_DUR
+            
             # Publish at 10Hz (every 0.1s) for the full duration
             # round() แทน int() เพื่อไม่สูญเสีย fractional time (~0.05-0.09s)
             loop_count = max(1, round(duration / 0.1))

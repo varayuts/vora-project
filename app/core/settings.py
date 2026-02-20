@@ -31,5 +31,8 @@ class Settings:
     
     # TTS Configuration
     TTS_BACKEND: str = os.getenv("TTS_BACKEND", "gtts")  # gtts (default), piper, typhoon2 disabled
+    
+    # Gateway Configuration (Windows PC running Gateway)
+    GATEWAY_URL: str = os.getenv("GATEWAY_URL", "http://192.168.0.60:9001")
 
 settings = Settings()

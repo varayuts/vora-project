@@ -311,6 +311,8 @@ async def plan_only(req: CommandRequest):
 
 # Store active gateway connections
 gateway_connections: Dict[str, WebSocket] = {}
+# Cache last search_status from Gateway for webapp polling (fallback for mixed-content WS blocking)
+_last_search_event: Dict = {}
 
 
 @router.websocket("/gateway")
@@ -356,6 +358,12 @@ async def gateway_websocket(websocket: WebSocket):
             elif msg_type == "task_complete":
                 # Robot completed a task
                 logger.info(f"✅ Task complete from {robot_id}: {data}")
+            
+            elif msg_type == "search_status":
+                # Gateway forwarded search_status — cache for webapp polling
+                _last_search_event.clear()
+                _last_search_event.update(data)
+                logger.info(f"🔍 Search event from {robot_id}: status={data.get('status')}")
                 
     except WebSocketDisconnect:
         logger.info(f"🔌 Robot disconnected: {robot_id}")
@@ -409,6 +417,13 @@ async def get_status():
         "robot_count": len(gateway_connections),
         "active_sessions": get_all_sessions()
     }
+
+
+@router.get("/search-status")
+async def get_search_status():
+    """🔍 Get last search_status event forwarded from Gateway.
+    Webapp polls this as fallback when it can't reach Gateway directly."""
+    return _last_search_event if _last_search_event else {"status": "none"}
 
 
 # ============ Memory Endpoints ============

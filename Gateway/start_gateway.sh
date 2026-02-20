@@ -110,6 +110,7 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 echo -e "   📡 ${CYAN}Endpoints:${NC}"
 echo -e "      Health:    ${BLUE}http://localhost:9001/health${NC}"
+echo -e "      Camera:    ${BLUE}http://localhost:9001/camera/frame${NC}"
 echo -e "      Audio WS:  ${BLUE}ws://localhost:9001/gw/audio${NC}"
 echo -e "      Dashboard: ${BLUE}ws://localhost:9001/gw/dashboard${NC}"
 echo ""

@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="th">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VORA - Voice Oriented Robotics Assistant</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg: #0d1117;
+            --card: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --success: #238636;
+            --danger: #da3633;
+            --warn: #d29922;
+        }
+        
+        html, body { height: 100%; }
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            display: flex; 
+            flex-direction: column;
+        }
+        
+        /* Header */
+        header { 
+            padding: 10px 16px; 
+            background: var(--card); 
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        
+        h1 { font-size: 18px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+        
+        .status-bar { display: flex; gap: 8px; align-items: center; }
+        .status {
+            padding: 5px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(35,134,54,0.2);
+            color: #3fb950;
+            border: 1px solid #3fb950;
+        }
+        .status.off { background: rgba(218,54,51,0.2); color: var(--danger); border-color: var(--danger); }
+        
+        /* Main Layout */
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 280px 1fr 320px;
+            gap: 12px;
+            padding: 12px;
+            overflow: hidden;
+        }
+        
+        .panel {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .panel-header {
+            padding: 10px 14px;
+            background: rgba(88,166,255,0.05);
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        
+        /* Left Panel - Controls */
+        .control-section { margin-bottom: 16px; }
+        .control-section h4 { font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
+        
+        select, input[type="text"] {
+            width: 100%;
+            padding: 8px 10px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 6px;
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+        
+        select:hover, input:hover { border-color: var(--accent); }
+        select:focus, input:focus { outline: none; border-color: var(--accent); }
+        
+        .btn {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: #79c0ff; }
+        .btn-success { background: var(--success); color: white; }
+        .btn-success:hover { background: #2ea043; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: #d1240f; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+        
+        .btn.recording { background: var(--danger); animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(218,54,51,0.4); } 50% { box-shadow: 0 0 0 6px rgba(218,54,51,0); } }
+        
+        .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+        
+        /* Center Panel - Camera */
+        #camera-panel { min-width: 0; }
+        
+        #camera-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            position: relative;
+        }
+        
+        #camera-feed {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 4px;
+        }
+        
+        #camera-placeholder {
+            text-align: center;
+            color: var(--muted);
+        }
+        
+        #camera-status {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: rgba(0,0,0,0.7);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: var(--success);
+        }
+        
+        .camera-controls {
+            padding: 10px;
+            background: var(--bg);
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+        }
+        
+        /* VLM Section */
+        #vlm-section {
+            padding: 10px;
+            background: rgba(88,166,255,0.03);
+            border-top: 1px solid var(--border);
+        }
+        
+        #vlm-gallery {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            padding: 4px 0;
+            margin-bottom: 8px;
+        }
+        
+        .vlm-thumb {
+            flex-shrink: 0;
+            width: 60px;
+            height: 45px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.15s;
+            object-fit: cover;
+        }
+        
+        .vlm-thumb:hover { border-color: var(--accent); opacity: 0.8; }
+        .vlm-thumb.selected { border-color: var(--accent); }
+        
+        .vlm-controls { display: flex; gap: 6px; }
+        .vlm-controls select { width: auto; flex: 1; margin: 0; }
+        .vlm-controls input { flex: 2; margin: 0; }
+        
+        #vlm-result {
+            margin-top: 8px;
+            padding: 8px;
+            background: var(--bg);
+            border-radius: 6px;
+            font-size: 12px;
+            max-height: 100px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        /* Right Panel - Chat */
+        #chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .msg {
+            max-width: 90%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.4;
+            animation: fadeIn 0.2s;
+        }
+        
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; } }
+        
+        .msg.user { align-self: flex-end; background: #1f2937; border: 1px solid rgba(88,166,255,0.2); }
+        .msg.vora { align-self: flex-start; background: #21262d; border: 1px solid var(--border); }
+        .msg.system { align-self: center; background: rgba(88,166,255,0.1); border: 1px dashed var(--accent); font-size: 11px; color: var(--accent); }
+        
+        #transcript {
+            padding: 10px 12px;
+            background: var(--bg);
+            border-top: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--muted);
+            min-height: 40px;
+            max-height: 80px;
+            overflow-y: auto;
+        }
+        
+        .chat-input {
+            display: flex;
+            gap: 6px;
+            padding: 10px;
+            background: var(--card);
+            border-top: 1px solid var(--border);
+        }
+        
+        .chat-input input { flex: 1; margin: 0; }
+        
+        /* Footer Controls */
+        footer {
+            padding: 12px 16px;
+            background: var(--card);
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        
+        footer .btn { min-width: 100px; padding: 10px 16px; }
+        
+        /* Responsive */
+        @media (max-width: 1200px) {
+            main { grid-template-columns: 1fr 1fr; }
+            .left-panel { display: none; }
+        }
+        
+        @media (max-width: 768px) {
+            main { grid-template-columns: 1fr; padding: 8px; }
+            #camera-panel { height: 300px; }
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>🤖 VORA</h1>
+    <div class="status-bar">
+        <span id="status-server" class="status off">Server</span>
+        <span id="status-camera" class="status off">Camera</span>
+        <span id="status-robot" class="status off">Robot</span>
+    </div>
+</header>
+
+<main>
+    <!-- Left: Controls -->
+    <div class="panel left-panel">
+        <div class="panel-header">🎮 Controls</div>
+        <div class="panel-content">
+            <!-- Microphone -->
+            <div class="control-section">
+                <h4>🎤 Microphone</h4>
+                <select id="mic-select"><option>Loading...</option></select>
+                <div id="sample-rate" style="font-size: 10px; color: var(--muted); margin-bottom: 6px;"></div>
+            </div>
+            
+            <!-- Mode -->
+            <div class="control-section">
+                <h4>🔄 Processing Mode</h4>
+                <select id="mode-select">
+                    <option value="transcript-only">📝 Transcript Only</option>
+                    <option value="manual-llm">🧠 Manual LLM</option>
+                    <option value="auto-planner">🤖 Auto Planner</option>
+                </select>
+            </div>
+            
+            <!-- Settings -->
+            <div class="control-section">
+                <h4>⚙️ Settings</h4>
+                <select id="silence-timeout">
+                    <option value="1000">Silence: 1.0s</option>
+                    <option value="1500" selected>Silence: 1.5s</option>
+                    <option value="2000">Silence: 2.0s</option>
+                </select>
+                <select id="min-speech">
+                    <option value="1.0">Min Speech: 1.0s</option>
+                    <option value="1.5" selected>Min Speech: 1.5s</option>
+                    <option value="2.0">Min Speech: 2.0s</option>
+                </select>
+            </div>
+            
+            <!-- Quick Commands -->
+            <div class="control-section">
+                <h4>⚡ Quick Commands</h4>
+                <div class="btn-row">
+                    <button class="btn btn-outline" onclick="sendCommand('ไปข้างหน้า')">↑ หน้า</button>
+                    <button class="btn btn-outline" onclick="sendCommand('ถอยหลัง')">↓ หลัง</button>
+                </div>
+                <div class="btn-row" style="margin-top: 6px;">
+                    <button class="btn btn-outline" onclick="sendCommand('เลี้ยวซ้าย')">← ซ้าย</button>
+                    <button class="btn btn-outline" onclick="sendCommand('เลี้ยวขวา')">→ ขวา</button>
+                </div>
+                <div class="btn-row" style="margin-top: 6px;">
+                    <button class="btn btn-danger" onclick="sendCommand('หยุด')" style="width:100%;">🛑 STOP</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Center: Camera + VLM -->
+    <div class="panel" id="camera-panel">
+        <div class="panel-header">
+            <span>📷 Robot Camera</span>
+            <span id="camera-fps" style="font-size: 10px; color: var(--muted);">-- fps</span>
+        </div>
+        <div id="camera-container">
+            <div id="camera-placeholder">
+                <div style="font-size: 48px; margin-bottom: 10px;">📷</div>
+                <p>Camera not connected</p>
+                <button class="btn btn-primary" onclick="startCamera()" style="margin-top: 12px;">Connect Camera</button>
+            </div>
+            <img id="camera-feed" style="display: none;" />
+            <div id="camera-status" style="display: none;">● LIVE</div>
+        </div>
+        <div class="camera-controls">
+            <button class="btn btn-outline" onclick="captureFrame()">📸 Capture</button>
+            <button class="btn btn-outline" onclick="toggleStream()">⏯️ Stream</button>
+            <button class="btn btn-outline" onclick="refreshCamera()">🔄 Refresh</button>
+        </div>
+        
+        <!-- VLM Section -->
+        <div id="vlm-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="font-size: 12px; font-weight: 600; color: var(--accent);">🧠 VLM Analysis (Qwen3-VL)</span>
+                <button class="btn btn-outline" style="padding: 4px 8px; font-size: 10px;" onclick="loadVLMImages()">🔄</button>
+            </div>
+            <div id="vlm-gallery"><span style="color: var(--muted); font-size: 11px;">Click 📸 Capture to add images</span></div>
+            <div class="vlm-controls">
+                <select id="vlm-action">
+                    <option value="live">📹 Live Camera</option>
+                    <option value="describe">📝 Describe (saved)</option>
+                    <option value="find">🔍 Find Object</option>
+                    <option value="obstacle">🚧 Obstacle</option>
+                </select>
+                <input type="text" id="vlm-query" placeholder="Object name / question..." />
+                <button class="btn btn-primary" onclick="sendVLMQuery()">Ask</button>
+            </div>
+            <div id="vlm-result"></div>
+        </div>
+    </div>
+    
+    <!-- Right: Chat -->
+    <div class="panel" id="chat-panel">
+        <div class="panel-header">
+            <span>💬 Chat</span>
+            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 10px;" onclick="clearChat()">Clear</button>
+        </div>
+        <div id="chat-history">
+            <div class="msg vora">สวัสดีครับ! 👋 ผม VORA<br>พร้อมรับคำสั่งครับ</div>
+        </div>
+        <div id="transcript">🎤 Waiting for input...</div>
+        <div class="chat-input">
+            <input type="text" id="text-input" placeholder="Type command..." onkeypress="if(event.key==='Enter')sendTextCommand()" />
+            <button class="btn btn-primary" onclick="sendTextCommand()">Send</button>
+        </div>
+    </div>
+</main>
+
+<footer>
+    <button class="btn btn-success" id="btn-mic" onclick="toggleMic()">🎤 Start</button>
+    <button class="btn btn-primary" id="btn-llm" onclick="sendToLLM()" disabled>🧠 LLM</button>
+    <button class="btn btn-danger" onclick="emergencyStop()">🚨 STOP</button>
+</footer>
+
+<script>
+// ======================== CONFIG ========================
+const hostname = window.location.hostname;
+const isSecure = location.protocol === 'https:';
+const isTailscale = hostname.endsWith('.ts.net');
+
+let API_BASE, WS_URL;
+
+if (isTailscale) {
+    API_BASE = `https://${hostname}`;
+    WS_URL = `wss://${hostname}/ws/stt`;
+} else if (isSecure) {
+    API_BASE = `https://${hostname}:8443`;
+    WS_URL = `wss://${hostname}:8443/ws/stt`;
+} else {
+    const port = location.port || '8080';
+    API_BASE = `http://${hostname}:${port}`;
+    WS_URL = `ws://${hostname}:${port}/ws/stt`;
+}
+
+console.log('🔌 API:', API_BASE);
+console.log('📡 WS:', WS_URL);
+
+// ======================== VARIABLES ========================
+let ws = null;
+let audioContext, mediaStream, processor;
+let isRecording = false;
+let selectedDeviceId = null;
+let selectedSampleRate = 48000;
+let selectedSilenceTimeout = 1500;
+let selectedMinSpeech = 1.5;
+let processMode = 'transcript-only';
+let currentPartial = '';
+let cameraInterval = null;
+let cameraStreaming = false;
+let vlmSelectedImage = null;
+
+// Elements
+const statusServer = document.getElementById('status-server');
+const statusCamera = document.getElementById('status-camera');
+const statusRobot = document.getElementById('status-robot');
+const chatHistory = document.getElementById('chat-history');
+const transcript = document.getElementById('transcript');
+const textInput = document.getElementById('text-input');
+const btnMic = document.getElementById('btn-mic');
+const btnLLM = document.getElementById('btn-llm');
+const micSelect = document.getElementById('mic-select');
+const modeSelect = document.getElementById('mode-select');
+const cameraFeed = document.getElementById('camera-feed');
+const cameraPlaceholder = document.getElementById('camera-placeholder');
+const cameraStatus = document.getElementById('camera-status');
+const cameraFps = document.getElementById('camera-fps');
+const vlmGallery = document.getElementById('vlm-gallery');
+const vlmResult = document.getElementById('vlm-result');
+
+// ======================== INIT ========================
+async function init() {
+    console.log('🚀 Initializing VORA...');
+    await checkHealth();
+    await enumerateMics();
+    setupEventListeners();
+    startCamera();
+    loadVLMImages();
+}
+
+function setupEventListeners() {
+    micSelect.onchange = e => selectedDeviceId = e.target.value;
+    modeSelect.onchange = e => {
+        processMode = e.target.value;
+        btnLLM.disabled = processMode !== 'manual-llm';
+    };
+    document.getElementById('silence-timeout').onchange = e => selectedSilenceTimeout = parseInt(e.target.value);
+    document.getElementById('min-speech').onchange = e => selectedMinSpeech = parseFloat(e.target.value);
+}
+
+// ======================== HEALTH CHECK ========================
+async function checkHealth() {
+    try {
+        const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) {
+            statusServer.classList.remove('off');
+            statusServer.textContent = 'Server ✓';
+            return true;
+        }
+    } catch (e) {
+        console.error('Health check failed:', e);
+    }
+    statusServer.classList.add('off');
+    statusServer.textContent = 'Server ✗';
+    return false;
+}
+
+// ======================== MICROPHONE ========================
+async function enumerateMics() {
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const mics = devices.filter(d => d.kind === 'audioinput');
+        
+        micSelect.innerHTML = mics.map((m, i) => 
+            `<option value="${m.deviceId}">${m.label || `Mic ${i+1}`}</option>`
+        ).join('');
+        
+        if (mics.length > 0) {
+            selectedDeviceId = mics[0].deviceId;
+        }
+        
+        // Detect sample rate
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        selectedSampleRate = ctx.sampleRate;
+        document.getElementById('sample-rate').textContent = `Sample Rate: ${selectedSampleRate}Hz`;
+        ctx.close();
+        
+    } catch (e) {
+        console.error('Mic enumeration failed:', e);
+        micSelect.innerHTML = '<option>No microphone access</option>';
+    }
+}
+
+// ======================== STT WEBSOCKET ========================
+function openWS() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    
+    const url = `${WS_URL}?sampleRate=${selectedSampleRate}&silenceTimeout=${selectedSilenceTimeout}&minSpeechDuration=${selectedMinSpeech}`;
+    console.log('📡 Connecting:', url);
+    
+    ws = new WebSocket(url);
+    
+    ws.onopen = () => {
+        console.log('✅ WS connected');
+        startAudioCapture();
+    };
+    
+    ws.onmessage = e => {
+        const data = JSON.parse(e.data);
+        handleSTTMessage(data);
+    };
+    
+    ws.onclose = () => {
+        console.log('❌ WS closed');
+        stopAudioCapture();
+        if (isRecording) {
+            setTimeout(openWS, 1000);
+        }
+    };
+    
+    ws.onerror = e => {
+        console.error('WS error:', e);
+    };
+}
+
+function handleSTTMessage(data) {
+    if (data.type === 'connected') {
+        transcript.textContent = '🎤 Listening...';
+    } else if (data.type === 'partial') {
+        transcript.innerHTML = `<span style="color: var(--accent);">🎤 ${data.text || '...'}</span>`;
+        currentPartial = data.text || '';
+    } else if (data.type === 'final') {
+        const text = cleanText(data.text);
+        if (text) {
+            addMsg('user', text);
+            transcript.textContent = '🎤 Processing...';
+            
+            // Auto process based on mode
+            if (processMode === 'auto-planner') {
+                processCommand(text);
+            }
+        }
+        currentPartial = '';
+    }
+}
+
+async function startAudioCapture() {
+    try {
+        const constraints = {
+            audio: {
+                deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
+                sampleRate: selectedSampleRate,
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true
+            }
+        };
+        
+        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: selectedSampleRate });
+        
+        const source = audioContext.createMediaStreamSource(mediaStream);
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+        
+        processor.onaudioprocess = e => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const pcm = e.inputBuffer.getChannelData(0);
+                const int16 = new Int16Array(pcm.length);
+                for (let i = 0; i < pcm.length; i++) {
+                    int16[i] = Math.max(-32768, Math.min(32767, pcm[i] * 32767));
+                }
+                ws.send(int16.buffer);
+            }
+        };
+        
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        
+        console.log('🎤 Audio capture started');
+    } catch (e) {
+        console.error('Audio capture failed:', e);
+        addMsg('system', '❌ Microphone access failed');
+    }
+}
+
+function stopAudioCapture() {
+    if (processor) {
+        processor.disconnect();
+        processor = null;
+    }
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+    }
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+}
+
+function toggleMic() {
+    if (isRecording) {
+        isRecording = false;
+        btnMic.textContent = '🎤 Start';
+        btnMic.classList.remove('recording');
+        if (ws) ws.close();
+        stopAudioCapture();
+        transcript.textContent = '🎤 Stopped';
+    } else {
+        isRecording = true;
+        btnMic.textContent = '⏹️ Stop';
+        btnMic.classList.add('recording');
+        openWS();
+    }
+}
+
+// ======================== CAMERA ========================
+function startCamera() {
+    cameraStreaming = true;
+    cameraFeed.style.display = 'block';
+    cameraPlaceholder.style.display = 'none';
+    cameraStatus.style.display = 'block';
+    
+    let frameCount = 0;
+    let lastTime = Date.now();
+    
+    async function fetchFrame() {
+        if (!cameraStreaming) return;
+        
+        try {
+            const resp = await fetch(`${API_BASE}/camera/frame`, { cache: 'no-store' });
+            
+            if (resp.status === 200) {
+                const blob = await resp.blob();
+                cameraFeed.src = URL.createObjectURL(blob);
+                
+                statusCamera.classList.remove('off');
+                statusCamera.textContent = 'Camera ✓';
+                
+                frameCount++;
+                const now = Date.now();
+                if (now - lastTime >= 1000) {
+                    cameraFps.textContent = `${frameCount} fps`;
+                    frameCount = 0;
+                    lastTime = now;
+                }
+            } else if (resp.status === 204) {
+                // No frame yet
+            }
+        } catch (e) {
+            statusCamera.classList.add('off');
+            statusCamera.textContent = 'Camera ✗';
+        }
+        
+        if (cameraStreaming) {
+            requestAnimationFrame(() => setTimeout(fetchFrame, 100)); // ~10 fps polling
+        }
+    }
+    
+    fetchFrame();
+}
+
+function stopCamera() {
+    cameraStreaming = false;
+    cameraFeed.style.display = 'none';
+    cameraPlaceholder.style.display = 'flex';
+    cameraStatus.style.display = 'none';
+}
+
+function toggleStream() {
+    if (cameraStreaming) {
+        stopCamera();
+    } else {
+        startCamera();
+    }
+}
+
+function refreshCamera() {
+    stopCamera();
+    setTimeout(startCamera, 100);
+}
+
+async function captureFrame() {
+    try {
+        const resp = await fetch(`${API_BASE}/camera/capture`, { method: 'POST' });
+        const data = await resp.json();
+        
+        if (data.success) {
+            addMsg('system', `📸 Captured: ${data.filename}`);
+            await loadVLMImages();
+            // Auto-select the latest captured image
+            vlmSelectedImage = data.filename;
+            document.querySelectorAll('.vlm-thumb').forEach(t => {
+                t.classList.toggle('selected', t.alt === data.filename);
+            });
+        } else {
+            addMsg('system', `❌ Capture failed: ${data.error}`);
+        }
+    } catch (e) {
+        addMsg('system', `❌ Capture error: ${e.message}`);
+    }
+}
+
+// ======================== VLM ========================
+async function loadVLMImages() {
+    try {
+        const resp = await fetch(`${API_BASE}/vlm/images`);
+        const data = await resp.json();
+        
+        if (!data.images || data.images.length === 0) {
+            vlmGallery.innerHTML = '<span style="color: var(--muted); font-size: 11px;">No images - Click Capture</span>';
+            return;
+        }
+        
+        vlmGallery.innerHTML = data.images.slice(-10).map(img => 
+            `<img class="vlm-thumb ${vlmSelectedImage === img.filename ? 'selected' : ''}" 
+                  src="${API_BASE}${img.url}" 
+                  alt="${img.filename}"
+                  onclick="selectVLMImage('${img.filename}', this)" />`
+        ).join('');
+        
+    } catch (e) {
+        vlmGallery.innerHTML = '<span style="color: var(--danger); font-size: 11px;">Failed to load</span>';
+    }
+}
+
+function selectVLMImage(filename, el) {
+    vlmSelectedImage = filename;
+    document.querySelectorAll('.vlm-thumb').forEach(t => t.classList.remove('selected'));
+    if (el) el.classList.add('selected');
+}
+
+async function sendVLMQuery() {
+    const action = document.getElementById('vlm-action').value;
+    const query = document.getElementById('vlm-query').value.trim();
+    
+    // Live mode doesn't need a saved image
+    if (action !== 'live' && !vlmSelectedImage) {
+        alert('Select an image first (or use Live Camera mode)');
+        return;
+    }
+    
+    let endpoint, body;
+    
+    switch (action) {
+        case 'live':
+            endpoint = '/vlm/describe-live';
+            body = query ? { prompt: query } : {};
+            break;
+        case 'describe':
+            endpoint = '/vlm/describe';
+            body = { image: vlmSelectedImage };
+            break;
+        case 'find':
+            if (!query) { alert('Enter object name'); return; }
+            endpoint = '/vlm/find-object';
+            body = { image: vlmSelectedImage, object_name: query };
+            break;
+        case 'obstacle':
+            endpoint = '/vlm/obstacle';
+            body = { image: vlmSelectedImage, current_goal: query };
+            break;
+    }
+    
+    vlmResult.style.display = 'block';
+    vlmResult.innerHTML = '<span style="color: var(--accent);">🧠 Analyzing...</span>';
+    
+    try {
+        const resp = await fetch(`${API_BASE}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        
+        const data = await resp.json();
+        
+        let html = '';
+        
+        if (action === 'find') {
+            html = data.found ? `✅ Found: ${data.object}` : `❌ Not found: ${query}`;
+            html += data.text ? `<br><br>${data.text}` : '';
+        } else if (action === 'obstacle') {
+            const strategies = { go_around_left: '← Go Left', go_around_right: '→ Go Right', wait: '⏸️ Wait', reroute: '🗺️ Reroute', stop: '🛑 Stop' };
+            html = `🚧 ${data.obstacle_type || 'Obstacle'}<br>📋 ${strategies[data.strategy] || data.strategy}`;
+            if (data.text) html += `<br><br>${data.text}`;
+        } else {
+            html = data.text || 'No result';
+        }
+        
+        vlmResult.innerHTML = html;
+        
+        if (data.text) {
+            addMsg('vora', `🧠 ${data.text}`);
+        }
+        
+    } catch (e) {
+        vlmResult.innerHTML = `<span style="color: var(--danger);">❌ ${e.message}</span>`;
+    }
+}
+
+// ======================== CHAT & COMMANDS ========================
+function addMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    div.innerHTML = text;
+    chatHistory.appendChild(div);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+}
+
+function clearChat() {
+    chatHistory.innerHTML = '<div class="msg vora">Chat cleared</div>';
+}
+
+function sendTextCommand() {
+    const text = textInput.value.trim();
+    if (!text) return;
+    
+    addMsg('user', text);
+    textInput.value = '';
+    
+    if (processMode === 'transcript-only') {
+        // Just display
+    } else {
+        processCommand(text);
+    }
+}
+
+async function sendCommand(cmd) {
+    addMsg('user', cmd);
+    await processCommand(cmd);
+}
+
+async function processCommand(text) {
+    addMsg('system', '🤖 Processing...');
+    
+    try {
+        const resp = await fetch(`${API_BASE}/plan/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, lang: 'th' })
+        });
+        
+        const data = await resp.json();
+        
+        if (data.reply) {
+            addMsg('vora', data.reply);
+        }
+        
+        if (data.tts_url) {
+            const audio = new Audio(API_BASE + data.tts_url);
+            audio.play().catch(() => {});
+        }
+        
+    } catch (e) {
+        addMsg('system', `❌ Error: ${e.message}`);
+    }
+}
+
+function sendToLLM() {
+    const text = currentPartial || textInput.value.trim();
+    if (text) {
+        processCommand(text);
+    }
+}
+
+function emergencyStop() {
+    addMsg('system', '🚨 EMERGENCY STOP');
+    sendCommand('หยุด');
+}
+
+// ======================== UTILITIES ========================
+function cleanText(text) {
+    if (!text) return '';
+    return text.replace(/\s+/g, ' ').trim();
+}
+
+// ======================== START ========================
+init();
+</script>
+
+</body>
+</html>

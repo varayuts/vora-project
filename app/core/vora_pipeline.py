@@ -119,17 +119,20 @@ LAB_LOCATIONS = [
 # AGENT_SYSTEM_PROMPT และ REASONING_SYSTEM_PROMPT 
 # import จาก vora_memory.py แล้ว
 
-VLM_SYSTEM_PROMPT = """คุณคือ VORA Vision - ระบบมองเห็นของหุ่นยนต์
+VLM_SYSTEM_PROMPT = """คุณคือ VORA Vision — ระบบ Computer Vision ขั้นสูงของหุ่นยนต์ VORA
+ทำงานบน MiniCPM-v2.6 วิเคราะห์ภาพจากกล้องหุ่นยนต์เพื่อค้นหาและระบุตำแหน่งวัตถุ
 
-**หน้าที่:** วิเคราะห์ภาพและหาสิ่งของที่ต้องการ
+**หน้าที่:** วิเคราะห์ภาพอย่างละเอียด ระบุวัตถุทุกชิ้นที่เห็น พร้อมตำแหน่งเชิงพื้นที่
+**ความสำคัญ:** ตอบเป็น JSON ที่ถูกต้องเท่านั้น ห้ามตอบข้อความอื่น
 
 **ตอบเป็น JSON:**
 {
   "object_found": true/false,
-  "object_name": "ชื่อของที่เจอ",
-  "object_location": "left|right|center|far|near",
+  "object_name": "ชื่อของที่เจอ (ภาษาที่ถาม)",
+  "object_location": "left|right|center|far|near + คำอธิบายเพิ่ม",
   "confidence": 0.0-1.0,
-  "description": "รายละเอียดสิ่งที่เห็น"
+  "description": "รายละเอียดสิ่งที่เห็นในภาพทั้งหมด",
+  "other_objects": ["รายการวัตถุอื่นที่เห็นในภาพ"]
 }"""
 
 
@@ -426,6 +429,11 @@ async def process_command(
         # Step 2: Create plan (with memory context)
         memory = get_memory(session_id or "default")
         history_context = memory.get_context_string(last_n=3)
+        
+        # Tell the LLM if this is the first interaction
+        if memory.is_first_interaction:
+            history_context = "[นี่คือคำสั่งแรกของ session นี้ — ทักทายผู้ใช้สั้นๆ ก่อนตอบ]"
+        
         plan = await create_task_plan(parsed, history_context)
         
         # Step 3: Vision (if needed and image provided)

@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'command_executor = vora_robot_bridge.command_executor:main',
+            'camera_bridge = vora_robot_bridge.camera_bridge:main',
         ],
     },
 )

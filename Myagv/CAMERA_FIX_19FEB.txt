@@ -1,0 +1,147 @@
+═══════════════════════════════════════════════════════════════════════════════
+           🔍 VORA Camera Debug — 19 Feb 2026 (ฉบับแก้ล่าสุด)
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 ปัญหาที่เจอ
+─────────────
+Terminal กล้อง (Terminal 2) เปิดขึ้นแล้วหายทันที
+/tmp/vora_camera.log ไม่เคยถูกสร้าง
+
+═══════════════════════════════════════════════════════════════════════════════
+🎯 ต้นตอ: pkill -f ros_camera_pub ฆ่าตัวเอง
+═══════════════════════════════════════════════════════════════════════════════
+
+ใน start_myagv.sh Terminal 2 เดิมมี:
+
+    gnome-terminal -- bash -c "
+        ...
+        pkill -f ros_camera_pub 2>/dev/null || true;    ← ตัวนี้!
+        ...
+        python3 ros_camera_pub.py ...
+    "
+
+ปัญหา: bash -c "...ros_camera_pub.py..." ทำให้คำว่า "ros_camera_pub"
+อยู่ใน command line ของ bash process เอง!
+pkill -f ros_camera_pub จึง match ตัวเอง → ส่ง SIGTERM → terminal ตาย
+
+Terminal อื่นไม่โดน เพราะไม่มี pkill ใน bash -c ของมัน
+
+
+═══════════════════════════════════════════════════════════════════════════════
+✅ วิธีแก้ (แก้แล้วใน repo)
+═══════════════════════════════════════════════════════════════════════════════
+
+เปลี่ยนจาก:
+    pkill -f ros_camera_pub 2>/dev/null || true;
+
+เป็น:
+    MY_PID=$$;
+    pgrep -f 'python3.*ros_camera_pub' | grep -v $MY_PID | xargs -r kill 2>/dev/null || true;
+    pgrep -f usb_cam_node | xargs -r kill 2>/dev/null || true;
+
+วิธีนี้จะ:
+1. หา PID ของ process ที่มี "python3.*ros_camera_pub" ใน command line
+2. ตัด PID ของตัวเองออก (grep -v $MY_PID)
+3. kill เฉพาะ process เก่า
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🔧 วิธีทดสอบ (หลัง git pull ใหม่)
+═══════════════════════════════════════════════════════════════════════════════
+
+# 1. Git pull ไฟล์ใหม่
+cd ~/Desktop/VORA_myAGV_only_ros2_package/new
+git pull
+
+# 2. รัน start_myagv.sh
+./start_myagv.sh 192.168.0.60
+
+# 3. ดู Terminal "VORA: Camera" - ควรจะเปิดค้างไว้
+#    ควรเห็น log ประมาณนี้:
+#    ══════════════════════════════════════════════════════════
+#    📷 Camera Publisher (OpenCV → /camera/compressed + /image_raw/compressed)
+#    ══════════════════════════════════════════════════════════
+#    [INFO] Starting ros_camera_pub.py ...
+#    [INFO] [vora_camera_pub]: Camera opened: id=0, backend=...
+#    [INFO] [vora_camera_pub]: 📷 VORA Direct Camera Publisher - Ready
+#    [INFO] [vora_camera_pub]: 📊 Published: XX frames (15.0 fps avg), 0 errors
+
+# 4. เช็ค topic
+ros2 topic list | grep compressed
+# ควรเห็น:
+#   /camera/compressed
+#   /image_raw/compressed
+
+# 5. เช็ค frame rate
+ros2 topic hz /camera/compressed
+# ควรเห็น: ~15 Hz
+
+# 6. เช็ค log file
+cat /tmp/vora_camera.log
+
+
+═══════════════════════════════════════════════════════════════════════════════
+📷 ถ้า Camera ยังไม่ทำงาน - ทดสอบด้วยมือ
+═══════════════════════════════════════════════════════════════════════════════
+
+# ใน terminal บน MyAGV:
+source /opt/ros/galactic/setup.bash
+cd ~/Desktop/VORA_myAGV_only_ros2_package/new
+python3 ros_camera_pub.py
+
+# ถ้าทำงาน = ปัญหาอยู่ที่ start_myagv.sh
+# ถ้าไม่ทำงาน = ปัญหา opencv หรือ camera device
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🌐 Gateway Side — สิ่งที่แก้ไขเพิ่ม
+═══════════════════════════════════════════════════════════════════════════════
+
+Gateway camera_stream.py ตอนนี้ subscribe 3 topics:
+  1. /image_raw          (sensor_msgs/Image)      — สำหรับ usb_cam raw
+  2. /image_raw/compressed (sensor_msgs/CompressedImage) — สำหรับ ros_camera_pub
+  3. /camera/compressed  (sensor_msgs/CompressedImage)   — สำหรับ ros_camera_pub (primary)
+
+ดังนั้นไม่ว่า camera จะ publish ที่ topic ไหน Gateway จะรับได้
+
+หลัง ros_camera_pub.py ทำงานแล้ว Gateway log ควรเห็น:
+  📷 First compressed frame! size=XXXXX bytes, format=jpeg
+  📷 Frame #30 (XXXXX bytes, jpeg)
+  📷 Frame #60 (XXXXX bytes, jpeg)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🐛 Bug อื่นที่แก้ไขแล้ว
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Gateway camera_stream.py มี duplicate except clause (Python syntax error)
+   - แก้แล้ว
+
+2. Gateway ไม่ได้ subscribe /camera/compressed
+   - เพิ่มแล้ว
+
+3. _on_compressed_image ไม่ log first frame
+   - เพิ่ม log แล้ว
+
+
+═══════════════════════════════════════════════════════════════════════════════
+📊 สถานะรวม — สิ่งที่ต้องเห็นเมื่อทุกอย่างทำงาน
+═══════════════════════════════════════════════════════════════════════════════
+
+MyAGV Terminal (Camera):
+  [INFO] [vora_camera_pub]: 📷 VORA Direct Camera Publisher - Ready
+  [INFO] [vora_camera_pub]: 📊 Published: 150 frames (15.0 fps avg), 0 errors
+
+Gateway Log:
+  📷 Subscribed to /image_raw (raw)
+  📷 Subscribed to /image_raw/compressed (compressed)
+  📷 Subscribed to /camera/compressed (camera compressed)
+  📷 First compressed frame! size=45000 bytes, format=jpeg
+  📷 Frame #30 (45000 bytes, jpeg)
+
+Webapp:
+  กด Connect Camera → เห็นภาพจากกล้อง
+  Camera status badge เปลี่ยนเป็น "Camera ✓"
+
+
+═══════════════════════════════════════════════════════════════════════════════
