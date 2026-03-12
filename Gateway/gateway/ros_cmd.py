@@ -16,6 +16,7 @@ class MotionPublisher:
         self._ros = None
         self._topic = None
         self._mqtt = None
+        self.post_motion_hook = None  # callable(linear_x, angular_z, actual_duration)
         if USE_MQTT:
             try:
                 import paho.mqtt.client as mqtt
@@ -61,7 +62,7 @@ class MotionPublisher:
         print(f"✅ Sent to /vora/command: {command_json}")
         await asyncio.sleep(0.5)  # Wait for command to be processed
 
-    async def exec_motion(self, cmd: Dict[str, Any]):
+    async def exec_motion(self, cmd: Dict[str, Any], obstacle_checker=None, post_motion_hook=None):
         # NEW: Send to Command Executor instead of direct /cmd_vel
         if cmd.get("type") == "stop":
             await self.send_to_command_executor("stop")
@@ -94,7 +95,16 @@ class MotionPublisher:
             loop_count = max(1, round(duration / 0.1))
             print(f"📡 Publishing {loop_count} messages at 10Hz for {duration}s")
             
+            interrupted = False
             for i in range(loop_count):
+                # Real-time obstacle interrupt: check LiDAR every iteration
+                # Only applies to forward motion (lx > 0) — don't interrupt rotations or backward
+                if obstacle_checker and lx > 0 and i % 3 == 0:  # check every ~0.3s
+                    if obstacle_checker():
+                        print(f"🛑 LIDAR INTERRUPT at step {i}/{loop_count} — obstacle detected during motion!")
+                        interrupted = True
+                        break
+                
                 self._topic.publish(self._twist(lx, az))
                 await asyncio.sleep(0.1)
             
@@ -102,8 +112,20 @@ class MotionPublisher:
             for _ in range(3):
                 self._topic.publish(self._twist(0.0, 0.0))
                 await asyncio.sleep(0.05)
-            print(f"✅ Motion completed: {loop_count} messages sent")
-            return True
+            
+            if interrupted:
+                print(f"⚠️ Motion interrupted early by LiDAR at step {i}/{loop_count}")
+                actual_dur = i * 0.1
+            else:
+                print(f"✅ Motion completed: {loop_count} messages sent")
+                actual_dur = duration
+            
+            # Report motion to dead-reckoning hook (if provided)
+            hook = post_motion_hook or self.post_motion_hook
+            if hook:
+                hook(lx, az, actual_dur)
+            
+            return not interrupted
         return False
 
     async def stop(self):

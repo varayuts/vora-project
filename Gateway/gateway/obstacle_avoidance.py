@@ -23,7 +23,7 @@ import math
 import asyncio
 import logging
 import tempfile
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import httpx
 
 logger = logging.getLogger("obstacle")
@@ -36,8 +36,33 @@ SCAN_TOPIC = "/scan"        # ROS LaserScan topic
 AVOIDANCE_SPEED = 0.10      # Slow avoidance speed (m/s)
 AVOIDANCE_ANGULAR = 0.40    # Avoidance turn speed (rad/s)
 
+# ── Robot Body Model ──────────────────────────────────────────────────
+# Elephant MyAGV 2023 physical dimensions (measured)
+ROBOT_WIDTH_M = 0.21        # 21 cm body width
+ROBOT_LENGTH_M = 0.26       # 26 cm body length (front to back)
+ROBOT_HALF_WIDTH_M = ROBOT_WIDTH_M / 2  # 10.5 cm half-width for clearance
+ROBOT_CLEARANCE_M = 0.05    # 5 cm minimum gap on each side to pass
+ROBOT_MIN_PASSAGE_M = ROBOT_WIDTH_M + 2 * ROBOT_CLEARANCE_M  # 31 cm minimum passage
+
+# Camera specs (Logitech C920-like webcam mounted on top of robot)
+CAMERA_FOV_H_DEG = 78       # Horizontal field of view
+CAMERA_MOUNT_HEIGHT_M = 0.18  # Camera height from ground (on top of LiDAR motor)
+CAMERA_MOUNT_OFFSET_X_M = 0.0  # Camera is centered on robot body
+
 # Server VLM endpoint
 SERVER_BASE = os.getenv("SERVER_BASE", "https://user.tail87d9fe.ts.net")
+
+# ── Sector Analysis Config ────────────────────────────────────────────
+NUM_SECTORS = 12            # Divide 360° into 12 sectors (30° each)
+SECTOR_DEG = 360 / NUM_SECTORS  # 30° per sector
+
+# ── LiDAR Mounting Offset ─────────────────────────────────────────────
+# YDLidar G2 on Elephant MyAGV: sensor 0° points FORWARD (cable side = rear).
+# Previous 180° offset was INVERTED — caused robot to think open space was
+# behind it and walls were in front, leading to spin-in-place behavior.
+# Set to 0 by default; override via LIDAR_OFFSET_DEG env var if mounting differs.
+_lidar_offset_deg = float(os.getenv("LIDAR_OFFSET_DEG", "0"))
+LIDAR_ANGLE_OFFSET_RAD = math.radians(_lidar_offset_deg)
 
 
 class ObstacleAvoidance:
@@ -64,7 +89,14 @@ class ObstacleAvoidance:
         self._obstacle_detected = False
         self._min_front_distance = float('inf')
         self._last_scan_ranges = []
+        self._last_angle_min = -math.pi
+        self._last_angle_increment = 0.01
+        self._last_range_min = 0.05
+        self._last_range_max = 12.0
         self._avoiding = False
+        # Sector analysis cache (updated every _on_scan)
+        self._sector_distances = [float('inf')] * NUM_SECTORS  # avg dist per sector
+        self._sector_min_distances = [float('inf')] * NUM_SECTORS  # min dist per sector
         
     async def start(self, ros_connection):
         """Start listening to LiDAR scan topic."""
@@ -105,10 +137,7 @@ class ObstacleAvoidance:
         """
         Callback for /scan topic (sensor_msgs/LaserScan).
         
-        LaserScan fields:
-        - angle_min, angle_max, angle_increment (radians)
-        - ranges: list of distances (meters)
-        - range_min, range_max: valid range limits
+        Updates front obstacle detection AND full 360° sector analysis.
         """
         if not self._enabled:
             return
@@ -123,25 +152,202 @@ class ObstacleAvoidance:
             return
         
         self._last_scan_ranges = ranges
+        self._last_angle_min = angle_min
+        self._last_angle_increment = angle_increment
+        self._last_range_min = range_min
+        self._last_range_max = range_max
         
-        # Extract front-zone readings (±30° from forward)
+        # ── Front-zone obstacle detection (existing) ──
         front_half_rad = math.radians(FRONT_ANGLE_DEG / 2)
         front_distances = []
         
+        # ── 360° Sector analysis (NEW) ──
+        # Divide full circle into NUM_SECTORS sectors (e.g. 12×30°)
+        sector_sums = [0.0] * NUM_SECTORS
+        sector_counts = [0] * NUM_SECTORS
+        sector_mins = [float('inf')] * NUM_SECTORS
+        
         for i, r in enumerate(ranges):
-            angle = angle_min + i * angle_increment
-            # Front zone: angle near 0 (or near ±π for rear-mounted LiDAR)
+            raw_angle = angle_min + i * angle_increment
+            # Apply mounting offset: LiDAR 0° = robot rear → shift by 180°
+            angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+            # Normalize to [-π, π]
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+            
+            # Front zone check
             if -front_half_rad <= angle <= front_half_rad:
                 if range_min <= r <= range_max:
                     front_distances.append(r)
+            
+            # Sector analysis — normalize angle to [0, 360)
+            if range_min <= r <= range_max:
+                angle_deg = math.degrees(angle) % 360
+                sector_idx = int(angle_deg / SECTOR_DEG) % NUM_SECTORS
+                sector_sums[sector_idx] += r
+                sector_counts[sector_idx] += 1
+                if r < sector_mins[sector_idx]:
+                    sector_mins[sector_idx] = r
         
+        # Update front obstacle status
         if not front_distances:
             self._obstacle_detected = False
             self._min_front_distance = float('inf')
-            return
+        else:
+            self._min_front_distance = min(front_distances)
+            self._obstacle_detected = self._min_front_distance < OBSTACLE_WARN_M
         
-        self._min_front_distance = min(front_distances)
-        self._obstacle_detected = self._min_front_distance < OBSTACLE_WARN_M
+        # Update sector caches
+        for s in range(NUM_SECTORS):
+            if sector_counts[s] > 0:
+                self._sector_distances[s] = sector_sums[s] / sector_counts[s]
+            else:
+                self._sector_distances[s] = float('inf')
+            self._sector_min_distances[s] = sector_mins[s]
+    
+    def get_obstacle_checker(self):
+        """Return a synchronous callable for exec_motion's obstacle_checker param."""
+        def _check():
+            return self._obstacle_detected and self._min_front_distance < OBSTACLE_STOP_M
+        return _check
+    
+    def find_best_direction(self) -> Dict[str, Any]:
+        """
+        Analyze 360° LiDAR data to find the best direction for the robot to travel.
+        
+        Uses sector analysis to score each direction based on:
+        1. Average distance (farther = more open space)
+        2. Minimum distance (must be > robot width for clearance)
+        3. Neighboring sectors (wide corridor = better than narrow gap)
+        
+        Returns:
+        {
+            "best_angle_deg": float,   # Best direction relative to current heading (0=front)
+            "best_distance": float,    # Average distance in best direction
+            "passable": bool,          # Can robot physically fit?
+            "all_sectors": [...],      # Summary of all 12 sectors
+            "open_directions": [...]   # List of passable directions sorted by score
+        }
+        """
+        sectors = []
+        for s in range(NUM_SECTORS):
+            center_deg = s * SECTOR_DEG + SECTOR_DEG / 2  # e.g. 15°, 45°, 75°, ...
+            # Normalize to [-180, 180) relative to front (0°)
+            rel_deg = center_deg if center_deg <= 180 else center_deg - 360
+            
+            avg_dist = self._sector_distances[s]
+            min_dist = self._sector_min_distances[s]
+            
+            # Dead zone detection: sectors with NO LiDAR readings (e.g. webcam blocking ±15°)
+            # must be treated as impassable, not as "infinitely open"
+            is_dead_zone = (avg_dist == float('inf') and min_dist == float('inf'))
+            
+            # Check corridor width: look at perpendicular sectors for clearance
+            # For a sector facing direction D, check if sectors at D±90° have enough
+            # distance to indicate the robot can physically fit
+            left_sector = (s + NUM_SECTORS // 4) % NUM_SECTORS  # +90°
+            right_sector = (s - NUM_SECTORS // 4) % NUM_SECTORS  # -90°
+            left_clearance = self._sector_min_distances[left_sector]
+            right_clearance = self._sector_min_distances[right_sector]
+            
+            # Passable = min distance > robot half-length AND sides > robot half-width + margin
+            # Dead zones (no readings) are NOT passable — unknown = unsafe
+            passable = (
+                not is_dead_zone and
+                min_dist > (ROBOT_LENGTH_M / 2 + ROBOT_CLEARANCE_M) and
+                left_clearance > ROBOT_HALF_WIDTH_M and
+                right_clearance > ROBOT_HALF_WIDTH_M
+            )
+            
+            # Score: weighted combination of distance + passability
+            # Prefer closer-to-forward directions slightly (human-like: don't do 180° turn if not needed)
+            forward_bias = max(0, 1.0 - abs(rel_deg) / 180.0)  # 1.0 at front, 0 at back
+            # Cap distances for scoring — infinity makes forward unbeatable,
+            # causing robot to ALWAYS go the same direction.
+            _MAX_S = 2.5  # meters
+            _s_avg = min(avg_dist, _MAX_S)
+            _s_min = min(min_dist, _MAX_S)
+            score = (_s_avg * 0.6 + _s_min * 0.3 + forward_bias * 0.5) if passable else 0.0
+            
+            sectors.append({
+                "sector": s,
+                "angle_deg": round(rel_deg, 1),
+                "avg_dist_m": round(avg_dist, 2) if avg_dist != float('inf') else None,
+                "min_dist_m": round(min_dist, 2) if min_dist != float('inf') else None,
+                "passable": passable,
+                "score": round(score, 3),
+            })
+        
+        # Sort by score descending
+        open_dirs = sorted([s for s in sectors if s["passable"]], key=lambda x: x["score"], reverse=True)
+        
+        if open_dirs:
+            best = open_dirs[0]
+            return {
+                "best_angle_deg": best["angle_deg"],
+                "best_distance": best["avg_dist_m"],
+                "passable": True,
+                "all_sectors": sectors,
+                "open_directions": open_dirs[:5],  # top 5 candidates
+            }
+        else:
+            # No passable direction found — stuck
+            return {
+                "best_angle_deg": 0.0,
+                "best_distance": 0.0,
+                "passable": False,
+                "all_sectors": sectors,
+                "open_directions": [],
+            }
+    
+    def can_robot_fit(self, direction_deg: float = 0.0) -> Tuple[bool, float]:
+        """
+        Quick check: can the robot physically fit if it moves in the given direction?
+        
+        Returns (passable, min_clearance_m).
+        """
+        # Find the sector closest to the requested direction
+        norm_deg = direction_deg % 360
+        sector_idx = int(norm_deg / SECTOR_DEG) % NUM_SECTORS
+        
+        front_dist = self._sector_min_distances[sector_idx]
+        left_sector = (sector_idx + NUM_SECTORS // 4) % NUM_SECTORS
+        right_sector = (sector_idx - NUM_SECTORS // 4) % NUM_SECTORS
+        
+        side_clearance = min(
+            self._sector_min_distances[left_sector],
+            self._sector_min_distances[right_sector],
+        )
+        
+        passable = (
+            front_dist > ROBOT_LENGTH_M and
+            side_clearance > ROBOT_HALF_WIDTH_M
+        )
+        
+        min_clearance = min(front_dist, side_clearance)
+        return passable, round(min_clearance, 3)
+    
+    def get_sector_summary(self) -> str:
+        """Human-readable summary of 360° LiDAR for logging."""
+        labels = ["Front", "F-Left", "Left", "B-Left", "Back", "B-Right",
+                   "Right", "F-Right"]  # 8 compass labels for 12 sectors
+        lines = []
+        for s in range(NUM_SECTORS):
+            center_deg = s * SECTOR_DEG + SECTOR_DEG / 2
+            rel_deg = center_deg if center_deg <= 180 else center_deg - 360
+            d = self._sector_min_distances[s]
+            avg_d = self._sector_distances[s]
+            is_dead = (avg_d == float('inf') and d == float('inf'))
+            if is_dead:
+                d_str = "DEAD"
+                passable = "⛔"
+            else:
+                d_str = f"{d:.2f}m" if d != float('inf') else "∞"
+                passable = "✅" if d > ROBOT_MIN_PASSAGE_M else "❌"
+            lines.append(f"  {rel_deg:+6.0f}°: {d_str:>6s} {passable}")
+        return "\n".join(lines)
     
     async def check_and_avoid(self) -> Optional[Dict[str, Any]]:
         """
@@ -227,7 +433,7 @@ class ObstacleAvoidance:
                     "type": "move", "linear_x": AVOIDANCE_SPEED,
                     "angular_z": 0.0,
                     "duration": 2.0,  # Move forward past obstacle
-                })
+                }, obstacle_checker=self.get_obstacle_checker())
                 await asyncio.sleep(0.2)
                 await self.motion.exec_motion({
                     "type": "move", "linear_x": 0.0,
@@ -248,7 +454,7 @@ class ObstacleAvoidance:
                     "type": "move", "linear_x": AVOIDANCE_SPEED,
                     "angular_z": 0.0,
                     "duration": 2.0,
-                })
+                }, obstacle_checker=self.get_obstacle_checker())
                 await asyncio.sleep(0.2)
                 await self.motion.exec_motion({
                     "type": "move", "linear_x": 0.0,

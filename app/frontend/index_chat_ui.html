@@ -1,0 +1,2930 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="theme-color" content="#0a0a12"/>
+<title>VORA — Voice Oriented Robotics Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+/* ═══════════════ RESET & TOKENS ═══════════════ */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a12;--bg2:#12121e;--bg3:#1a1a2a;--bg4:#222236;
+  --surface:#16162a;--surface2:#1e1e34;
+  --text:#e4e4f0;--text2:#a0a0b8;--text3:#6a6a80;
+  --accent:#7c5cff;--accent2:#a78bfa;--accent-glow:rgba(124,92,255,.25);
+  --green:#10b981;--red:#ef4444;--amber:#f59e0b;--blue:#3b82f6;
+  --border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.12);
+  --radius:16px;--radius2:24px;--radius3:32px;
+  --font:'Inter','Noto Sans Thai',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --mono:'JetBrains Mono','SF Mono','Cascadia Code','Fira Code',monospace;
+  --shadow:0 8px 32px rgba(0,0,0,.4);
+  --transition:all .3s cubic-bezier(.4,0,.2,1);
+  --glass:rgba(22,22,42,.65);
+  --glass-border:rgba(255,255,255,.08);
+  --glass-blur:blur(20px) saturate(1.5);
+}
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:var(--font);background:var(--bg);color:var(--text);
+  display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;
+}
+
+/* Animated ambient nebula background — makes glassmorphism visible */
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 600px 400px at 15% 20%, rgba(124,92,255,.08) 0%, transparent 70%),
+    radial-gradient(ellipse 500px 500px at 85% 75%, rgba(59,130,246,.07) 0%, transparent 70%),
+    radial-gradient(ellipse 400px 300px at 50% 50%, rgba(167,139,250,.05) 0%, transparent 70%);
+  animation:nebulaShift 12s ease-in-out infinite alternate;
+}
+body::after{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 300px 300px at 70% 15%, rgba(16,185,129,.06) 0%, transparent 70%),
+    radial-gradient(ellipse 500px 400px at 30% 80%, rgba(124,92,255,.06) 0%, transparent 70%);
+  animation:nebulaShift2 15s ease-in-out infinite alternate;
+}
+@keyframes nebulaShift{
+  0%{opacity:.7;transform:translateX(0) translateY(0) scale(1)}
+  100%{opacity:1;transform:translateX(30px) translateY(-20px) scale(1.1)}
+}
+@keyframes nebulaShift2{
+  0%{opacity:.5;transform:translateX(0) translateY(0)}
+  100%{opacity:.9;transform:translateX(-20px) translateY(15px)}
+}
+
+/* ═══════════════ HEADER ═══════════════ */
+.header{
+  height:56px;padding:0 20px;display:flex;align-items:center;justify-content:space-between;
+  background:rgba(22,22,42,.55);backdrop-filter:blur(24px) saturate(1.6);-webkit-backdrop-filter:blur(24px) saturate(1.6);
+  border-bottom:1px solid rgba(124,92,255,.12);flex-shrink:0;z-index:100;
+  box-shadow:0 1px 30px rgba(124,92,255,.06);position:relative;
+}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{
+  width:36px;height:36px;border-radius:12px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 20px var(--accent-glow);
+  transition:box-shadow .6s ease, transform .6s ease;
+}
+.logo-icon.thinking{
+  animation:logoPulse 1.8s ease-in-out infinite;
+  box-shadow:0 0 30px var(--accent-glow),0 0 60px rgba(124,92,255,.15);
+}
+@keyframes logoPulse{
+  0%,100%{transform:scale(1);box-shadow:0 0 20px var(--accent-glow)}
+  50%{transform:scale(1.08);box-shadow:0 0 40px rgba(124,92,255,.4),0 0 80px rgba(124,92,255,.15)}
+}
+.logo-icon img{width:100%;height:100%;object-fit:cover;border-radius:12px}
+.logo-text{font-size:18px;font-weight:700;color:var(--text);letter-spacing:1px}
+.logo-sub{font-size:10px;color:var(--text3);margin-top:-2px;letter-spacing:.5px}
+.header-right{display:flex;align-items:center;gap:8px}
+.status-dot{
+  display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:20px;font-size:11px;
+  font-weight:500;background:rgba(22,22,42,.5);border:1px solid rgba(255,255,255,.08);color:var(--text2);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+.status-dot::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--red);flex-shrink:0}
+.status-dot.on::before{background:var(--green);box-shadow:0 0 10px rgba(16,185,129,.6)}
+.status-dot.on{color:var(--green);border-color:rgba(16,185,129,.15)}
+.btn-icon{
+  width:36px;height:36px;border-radius:10px;border:1px solid rgba(255,255,255,.08);background:rgba(22,22,42,.4);
+  color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:16px;transition:var(--transition);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+.btn-icon:hover{background:rgba(124,92,255,.1);border-color:rgba(124,92,255,.2);color:var(--text)}
+
+/* ═══════════════ MAIN CONTAINER ═══════════════ */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;z-index:1}
+
+/* ═══════════════ CHAT AREA ═══════════════ */
+.chat-area{
+  flex:1;overflow-y:auto;overflow-x:hidden;scroll-behavior:smooth;
+  padding:20px 0;
+}
+.chat-area::-webkit-scrollbar{width:4px}
+.chat-area::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:4px}
+
+.chat-container{max-width:760px;margin:0 auto;padding:0 20px}
+
+/* Welcome Screen */
+.welcome{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:calc(100vh - 280px);text-align:center;gap:16px;
+  animation:fadeUp .6s ease-out;
+  transition:all .8s cubic-bezier(.4,0,.2,1);
+}
+.welcome.shrinking{
+  min-height:0;gap:8px;padding:12px 0;
+  animation:heroShrink .8s cubic-bezier(.4,0,.2,1) forwards;
+}
+@keyframes heroShrink{
+  0%{opacity:1;transform:scale(1) translateY(0)}
+  100%{opacity:0;transform:scale(.6) translateY(-40px);height:0;margin:0;padding:0;overflow:hidden}
+}
+.welcome-icon{
+  width:80px;height:80px;border-radius:24px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 60px var(--accent-glow),0 0 120px rgba(124,92,255,.15),0 0 200px rgba(124,92,255,.05);
+  animation:float 3s ease-in-out infinite;
+  transition:all .6s ease;
+  border:1px solid rgba(124,92,255,.2);
+}
+.welcome.shrinking .welcome-icon{width:40px;height:40px;border-radius:12px}
+.welcome-icon img{width:100%;height:100%;object-fit:cover;border-radius:24px}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.welcome h2{font-size:26px;font-weight:600;color:var(--text);margin-top:8px;text-shadow:0 0 40px rgba(124,92,255,.15)}
+.welcome p{font-size:15px;color:var(--text2);max-width:400px;line-height:1.6}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* Messages */
+.msg-group{display:flex;gap:10px;margin-bottom:16px;animation:msgIn .3s ease-out}
+@keyframes msgIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+.msg-group.user{flex-direction:row-reverse}
+.msg-avatar{
+  width:32px;height:32px;border-radius:10px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:14px;
+}
+.msg-group.vora .msg-avatar{background:linear-gradient(135deg,var(--accent),#4f46e5);color:#fff}
+.msg-group.user .msg-avatar{background:var(--bg4);color:var(--text2)}
+
+.msg-content{max-width:85%}
+.msg-bubble{
+  padding:12px 16px;border-radius:var(--radius);font-size:14px;line-height:1.6;
+  word-break:break-word;
+}
+.msg-group.vora .msg-bubble{
+  background:rgba(22,22,42,.5);backdrop-filter:blur(16px) saturate(1.4);-webkit-backdrop-filter:blur(16px) saturate(1.4);
+  border:1px solid rgba(124,92,255,.12);box-shadow:0 2px 15px rgba(0,0,0,.2);
+}
+.msg-group.user .msg-bubble{background:var(--accent);color:#fff}
+.msg-time{font-size:10px;color:var(--text3);margin-top:4px;padding:0 4px}
+.msg-group.user .msg-time{text-align:right}
+
+/* System Messages */
+.msg-system{
+  text-align:center;margin:12px 0;animation:fadeIn .3s;
+}
+.msg-system span{
+  display:inline-block;padding:6px 14px;border-radius:20px;font-size:12px;
+  color:var(--accent2);background:rgba(124,92,255,.08);border:1px dashed rgba(124,92,255,.2);
+}
+
+/* Search Progress Card */
+.search-card{
+  margin:12px 0;padding:16px;border-radius:var(--radius);
+  background:linear-gradient(135deg,rgba(124,92,255,.08),rgba(99,102,241,.05));
+  border:1px solid rgba(124,92,255,.2);animation:fadeIn .3s;
+}
+.search-card .search-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.search-card .search-icon{font-size:20px;animation:spin 2s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.search-card .search-title{font-size:14px;font-weight:600;color:var(--accent2)}
+.search-card .search-status{font-size:13px;color:var(--text2);line-height:1.5}
+.search-card .search-progress{
+  margin-top:10px;height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;
+}
+.search-card .search-progress-bar{
+  height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));
+  width:0%;transition:width .5s;border-radius:2px;
+}
+.search-card .search-cancel{
+  margin-top:10px;padding:6px 14px;border-radius:10px;font-size:12px;
+  background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);color:var(--red);
+  cursor:pointer;transition:var(--transition);
+}
+.search-card .search-cancel:hover{background:rgba(239,68,68,.2)}
+
+/* Found Card */
+.found-card{
+  margin:12px 0;padding:16px;border-radius:var(--radius);overflow:hidden;
+  background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(16,185,129,.03));
+  border:1px solid rgba(16,185,129,.3);animation:fadeIn .3s;
+}
+.found-card .found-header{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--green)}
+.found-card .found-img{
+  width:100%;max-height:200px;object-fit:cover;border-radius:10px;margin-top:10px;
+  border:1px solid var(--border);
+}
+.found-card .found-text{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5}
+
+/* Obstacle Card */
+.obstacle-card{
+  margin:12px 0;padding:14px;border-radius:var(--radius);
+  background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);animation:fadeIn .3s;
+  font-size:13px;color:var(--amber);
+}
+
+/* ═══════════════ CAMERA MINI VIEW ═══════════════ */
+.camera-mini{
+  position:absolute;top:12px;right:12px;z-index:50;
+  width:300px;border-radius:var(--radius);overflow:hidden;
+  background:rgba(10,10,18,.75);backdrop-filter:blur(12px) saturate(1.3);-webkit-backdrop-filter:blur(12px) saturate(1.3);
+  border:1px solid rgba(124,92,255,.12);
+  box-shadow:var(--shadow),0 0 0 1px rgba(255,255,255,.04);cursor:grab;
+  opacity:.92;touch-action:none;user-select:none;
+  transition:opacity .3s, box-shadow .3s, transform .3s;
+}
+.camera-mini:hover{opacity:1;box-shadow:0 12px 40px rgba(0,0,0,.6),0 0 20px rgba(124,92,255,.1);transform:scale(1.01)}
+.camera-mini.dragging{opacity:1;cursor:grabbing;box-shadow:0 16px 48px rgba(0,0,0,.7);z-index:55}
+.camera-mini img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}
+.camera-mini .cam-label{
+  position:absolute;top:6px;left:6px;padding:2px 8px;border-radius:6px;
+  background:rgba(0,0,0,.7);font-size:9px;font-weight:600;color:var(--green);
+  display:flex;align-items:center;gap:4px;
+}
+.camera-mini .cam-label::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--red)}
+.camera-mini.live .cam-label::before{background:var(--green);box-shadow:0 0 6px rgba(16,185,129,.6)}
+.camera-mini .cam-expand{
+  position:absolute;bottom:6px;right:6px;width:24px;height:24px;border-radius:6px;
+  background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.15);
+  display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;
+}
+.camera-mini.hidden{display:none}
+
+/* Camera Fullscreen */
+.camera-full{
+  position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.92);backdrop-filter:blur(8px);
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+}
+.camera-full.show{display:flex}
+.camera-full img{max-width:90vw;max-height:70vh;border-radius:var(--radius);object-fit:contain}
+.camera-full .cam-close{
+  position:absolute;top:16px;right:16px;width:40px;height:40px;border-radius:12px;
+  background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);
+  color:#fff;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+.camera-full .cam-actions{display:flex;gap:10px;margin-top:16px}
+.camera-full .cam-actions button{
+  padding:10px 20px;border-radius:12px;border:1px solid var(--border2);
+  background:var(--bg3);color:var(--text);font-size:13px;cursor:pointer;font-family:var(--font);
+  display:flex;align-items:center;gap:6px;transition:var(--transition);
+}
+.camera-full .cam-actions button:hover{background:var(--bg4);border-color:var(--accent)}
+
+/* ═══════════════ BOTTOM INPUT AREA ═══════════════ */
+.input-area{
+  flex-shrink:0;padding:12px 20px 20px;
+  background:linear-gradient(180deg,transparent 0%,var(--bg) 20%);
+}
+.input-area-inner{max-width:760px;margin:0 auto}
+
+/* Quick Chips — (styles below in CHIP HOVER GLOW section) */
+.chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:12px}
+.chip.danger{border-color:rgba(239,68,68,.3)}
+.chip.danger:hover{background:rgba(239,68,68,.1);border-color:var(--red);color:var(--red);box-shadow:0 0 16px rgba(239,68,68,.15)}
+
+/* Input Box */
+.input-box{
+  display:flex;align-items:flex-end;gap:10px;padding:10px 10px 10px 16px;
+  background:rgba(22,22,42,.5);backdrop-filter:blur(24px) saturate(1.6);-webkit-backdrop-filter:blur(24px) saturate(1.6);
+  border:1px solid rgba(124,92,255,.15);border-radius:var(--radius2);
+  transition:var(--transition);position:relative;
+  box-shadow:0 4px 30px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.04);
+}
+.input-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow),0 0 40px rgba(124,92,255,.15),inset 0 1px 0 rgba(255,255,255,.06)}
+
+.input-box textarea{
+  flex:1;background:none;border:none;outline:none;color:var(--text);
+  font-family:var(--font);font-size:15px;line-height:1.5;resize:none;
+  max-height:120px;min-height:24px;padding:4px 0;
+}
+.input-box textarea::placeholder{color:var(--text3)}
+
+.input-btn{
+  width:42px;height:42px;border-radius:50%;border:none;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+  transition:var(--transition);flex-shrink:0;
+}
+.input-btn.mic{background:var(--accent);color:#fff;position:relative;overflow:visible}
+.input-btn.mic:hover{background:var(--accent2);box-shadow:0 0 20px var(--accent-glow)}
+.input-btn.mic.recording{
+  background:var(--red);animation:micPulse 1.2s infinite;
+}
+@keyframes micPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}
+  50%{box-shadow:0 0 0 12px rgba(239,68,68,0)}
+}
+.input-btn.send{background:var(--bg3);color:var(--text2)}
+.input-btn.send:hover{background:var(--accent);color:#fff}
+.input-btn.send.has-text{background:var(--accent);color:#fff}
+
+/* Transcript indicator */
+.transcript-bar{
+  text-align:center;padding:4px 0;font-size:12px;color:var(--text3);
+  min-height:20px;transition:var(--transition);
+}
+.transcript-bar.active{color:var(--accent2)}
+
+/* ═══════════════ SETTINGS PANE ═══════════════ */
+.settings-overlay{
+  position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);
+  display:none;align-items:center;justify-content:center;
+}
+.settings-overlay.show{display:flex}
+/* Settings panel — (glassmorphism styles below in SETTINGS PANEL GLASS section) */
+.settings-panel h3{font-size:18px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.settings-group{margin-bottom:16px}
+.settings-group label{display:block;font-size:12px;color:var(--text2);margin-bottom:6px;font-weight:500}
+.settings-group input,.settings-group select{
+  width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--border2);
+  background:var(--bg3);color:var(--text);font-size:14px;font-family:var(--font);outline:none;
+}
+.settings-group input:focus,.settings-group select:focus{border-color:var(--accent)}
+.settings-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+.settings-actions button{
+  padding:10px 20px;border-radius:12px;font-size:14px;font-weight:500;cursor:pointer;
+  border:1px solid var(--border2);transition:var(--transition);font-family:var(--font);
+}
+.settings-actions .btn-save{background:var(--accent);color:#fff;border-color:var(--accent)}
+.settings-actions .btn-cancel{background:transparent;color:var(--text2)}
+
+/* ═══════════════ MEMORY SIDEBAR ═══════════════ */
+.memory-overlay{
+  position:fixed;inset:0;z-index:250;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);
+  display:none;
+}
+.memory-overlay.show{display:block}
+.memory-panel{
+  position:fixed;top:0;right:-380px;width:360px;height:100%;z-index:260;
+  background:var(--bg2);border-left:1px solid var(--border2);
+  transition:right .3s ease;display:flex;flex-direction:column;
+}
+.memory-panel.show{right:0}
+.memory-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.memory-header h3{font-size:16px;display:flex;align-items:center;gap:8px}
+.memory-list{flex:1;overflow-y:auto;padding:12px}
+.memory-item{
+  padding:12px;margin-bottom:8px;border-radius:12px;background:var(--bg3);
+  border:1px solid var(--border);
+}
+.memory-item h4{font-size:14px;color:var(--accent2);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.memory-item p{font-size:12px;color:var(--text2);line-height:1.4}
+.memory-item .mem-time{font-size:10px;color:var(--text3);margin-top:4px}
+.memory-empty{text-align:center;padding:40px 20px;color:var(--text3);font-size:14px}
+
+/* ═══════════════ D-PAD Overlay ═══════════════ */
+.dpad-overlay{
+  position:fixed;bottom:100px;left:20px;z-index:80;
+  display:none;transition:all .4s cubic-bezier(.4,0,.2,1);transform-origin:bottom left;
+}
+.dpad-overlay.show{display:block;animation:dpadIn .35s cubic-bezier(.34,1.56,.64,1) forwards}
+.dpad-overlay.hiding{animation:dpadOut .25s ease-in forwards}
+@keyframes dpadIn{from{opacity:0;transform:scale(.5) translateY(20px)}to{opacity:1;transform:scale(1) translateY(0)}}
+@keyframes dpadOut{from{opacity:1;transform:scale(1)}to{opacity:0;transform:scale(.5) translateY(20px)}}
+.dpad{display:grid;grid-template-columns:50px 50px 50px;grid-template-rows:50px 50px 50px;gap:4px}
+.dpad button{
+  width:50px;height:50px;border-radius:12px;border:1px solid rgba(124,92,255,.15);
+  background:rgba(22,22,42,.6);backdrop-filter:blur(16px) saturate(1.4);-webkit-backdrop-filter:blur(16px) saturate(1.4);
+  color:var(--text);font-size:18px;cursor:pointer;font-family:var(--font);
+  display:flex;align-items:center;justify-content:center;transition:all .2s ease;
+  box-shadow:0 2px 12px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.05);
+}
+.dpad button:hover{background:rgba(124,92,255,.15);border-color:var(--accent);transform:scale(1.05)}
+.dpad button:active{transform:scale(.92);background:var(--accent);color:#fff}
+.dpad button.stop{background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.3);color:var(--red);font-size:14px;font-weight:700}
+.dpad button.empty{visibility:hidden}
+
+/* ═══════════════ RESPONSIVE ═══════════════ */
+@media(max-width:600px){
+  .header{padding:0 12px}
+  .logo-sub{display:none}
+  .status-dot span{display:none}
+  .chat-container{padding:0 12px}
+  .input-area{padding:8px 12px 14px}
+  .chips{gap:6px}
+  .chip{padding:6px 12px;font-size:12px}
+  .camera-mini{width:220px;top:8px;right:8px}
+  .welcome h2{font-size:20px}
+  .dpad-overlay{bottom:90px;left:10px}
+  .memory-panel{width:300px}
+}
+
+/* ═══════════════ STATE INDICATOR BAR ═══════════════ */
+.state-bar{
+  height:32px;padding:0 20px;display:flex;align-items:center;justify-content:center;gap:12px;
+  background:rgba(22,22,42,.45);backdrop-filter:blur(20px) saturate(1.4);-webkit-backdrop-filter:blur(20px) saturate(1.4);
+  border-bottom:1px solid rgba(124,92,255,.08);flex-shrink:0;z-index:99;
+  font-size:12px;font-weight:500;color:var(--text3);transition:all .4s ease;
+}
+.state-bar .state-icon{font-size:14px;animation:none}
+.state-bar .state-text{letter-spacing:.3px}
+.state-bar .state-ping{margin-left:auto;font-size:10px;font-family:var(--mono);color:var(--text3);display:flex;align-items:center;gap:4px}
+.state-bar .state-ping .ping-dot{width:5px;height:5px;border-radius:50%;background:var(--text3)}
+.state-bar[data-state="idle"]{color:var(--text3)}
+.state-bar[data-state="idle"] .state-icon{color:var(--green)}
+.state-bar[data-state="listening"]{color:var(--red);background:rgba(239,68,68,.05)}
+.state-bar[data-state="listening"] .state-icon{animation:micPulse 1.2s infinite}
+.state-bar[data-state="processing"]{color:var(--amber);background:rgba(245,158,11,.05)}
+.state-bar[data-state="processing"] .state-icon{animation:spin 1.5s linear infinite}
+.state-bar[data-state="executing"]{color:var(--blue);background:rgba(59,130,246,.05)}
+.state-bar[data-state="executing"] .state-icon{animation:executePulse 1s infinite}
+.state-bar[data-state="searching"]{color:var(--accent2);background:rgba(124,92,255,.05)}
+.state-bar[data-state="searching"] .state-icon{animation:spin 2s linear infinite}
+@keyframes executePulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ═══════════════ EMERGENCY STOP ═══════════════ */
+.estop{
+  position:fixed;bottom:24px;right:24px;z-index:90;
+  width:64px;height:64px;border-radius:50%;border:3px solid #b91c1c;
+  background:radial-gradient(circle at 40% 35%,#f87171,#dc2626 50%,#991b1b);
+  color:#fff;font-size:10px;font-weight:800;letter-spacing:.5px;line-height:1.1;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;text-align:center;
+  box-shadow:0 4px 20px rgba(220,38,38,.4),inset 0 -3px 6px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15);
+  transition:transform .1s,box-shadow .1s;text-transform:uppercase;
+  -webkit-tap-highlight-color:transparent;user-select:none;
+}
+.estop:hover{transform:scale(1.08);box-shadow:0 6px 30px rgba(220,38,38,.6),inset 0 -3px 6px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15)}
+.estop:active{transform:scale(.92);box-shadow:0 2px 10px rgba(220,38,38,.5),inset 0 3px 8px rgba(0,0,0,.4)}
+.estop .estop-ring{
+  position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(220,38,38,.25);
+  animation:estopRing 2s ease-out infinite;
+}
+@keyframes estopRing{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.3);opacity:0}}
+
+/* ═══════════════ TTS TOGGLE ═══════════════ */
+.btn-icon.tts-muted{color:var(--red);border-color:rgba(239,68,68,.3)}
+.btn-icon.tts-muted:hover{background:rgba(239,68,68,.1)}
+
+/* ═══════════════ TELEMETRY PANEL ═══════════════ */
+.telemetry-overlay{
+  position:fixed;inset:0;z-index:250;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);
+  display:none;
+}
+.telemetry-overlay.show{display:block}
+.telemetry-panel{
+  position:fixed;top:0;right:-400px;width:380px;height:100%;z-index:260;
+  background:var(--bg2);border-left:1px solid var(--border2);
+  transition:right .3s ease;display:flex;flex-direction:column;
+}
+.telemetry-panel.show{right:0}
+.telemetry-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.telemetry-header h3{font-size:16px;display:flex;align-items:center;gap:8px}
+.telemetry-body{flex:1;overflow-y:auto;padding:16px}
+.telem-card{
+  padding:14px;margin-bottom:12px;border-radius:12px;background:var(--bg3);border:1px solid var(--border);
+}
+.telem-card h4{font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.telem-row{
+  display:flex;align-items:center;justify-content:space-between;padding:4px 0;
+  font-size:13px;
+}
+.telem-row .telem-label{color:var(--text2)}
+.telem-row .telem-value{font-family:var(--mono);font-weight:600;color:var(--text)}
+.telem-row .telem-value.good{color:var(--green)}
+.telem-row .telem-value.warn{color:var(--amber)}
+.telem-row .telem-value.bad{color:var(--red)}
+.telem-bar{
+  height:6px;background:var(--bg);border-radius:3px;margin-top:6px;overflow:hidden;
+}
+.telem-bar-fill{height:100%;border-radius:3px;transition:width .5s,background .5s}
+.telem-mini-map{
+  width:100%;aspect-ratio:1;background:var(--bg);border-radius:8px;border:1px solid var(--border);
+  position:relative;overflow:hidden;margin-top:8px;cursor:pointer;
+  min-height:300px;
+}
+.telem-mini-map canvas{position:absolute;inset:0;width:100%;height:100%}
+.telem-mini-map .map-label{
+  position:absolute;bottom:4px;left:6px;font-size:8px;color:var(--text3);
+  font-family:var(--mono);pointer-events:none;
+}
+/* Expanded map overlay */
+.map-expanded{
+  position:fixed;inset:20px;z-index:300;
+  background:var(--bg);border-radius:16px;border:1px solid var(--border);
+  box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;display:none;
+}
+.map-expanded.show{display:flex;flex-direction:column}
+.map-expanded .map-header{
+  padding:12px 16px;display:flex;align-items:center;justify-content:space-between;
+  border-bottom:1px solid var(--border);
+}
+.map-expanded .map-header h3{margin:0;font-size:14px;color:var(--text1)}
+.map-expanded .map-close{background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer}
+.map-expanded .map-canvas-wrap{flex:1;position:relative;overflow:hidden}
+.map-expanded canvas{position:absolute;inset:0;width:100%;height:100%}
+
+/* ═══════════════ CONSOLE LOG ═══════════════ */
+.console-toggle{
+  position:fixed;bottom:24px;left:24px;z-index:85;
+  padding:8px 14px;border-radius:12px;border:1px solid var(--border2);
+  background:var(--surface);color:var(--text2);font-size:11px;font-weight:600;
+  cursor:pointer;display:flex;align-items:center;gap:6px;
+  transition:var(--transition);font-family:var(--font);
+  box-shadow:var(--shadow);letter-spacing:.3px;
+}
+.console-toggle:hover{background:var(--bg4);border-color:var(--accent);color:var(--accent2)}
+.console-toggle .console-count{
+  background:var(--accent);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px;min-width:16px;text-align:center;
+}
+.console-panel{
+  position:fixed;bottom:0;left:0;right:0;z-index:180;
+  height:0;max-height:45vh;background:var(--bg2);border-top:1px solid var(--border2);
+  transition:height .3s ease;overflow:hidden;display:flex;flex-direction:column;
+}
+.console-panel.show{height:35vh}
+.console-toolbar{
+  padding:8px 16px;display:flex;align-items:center;justify-content:space-between;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.console-toolbar h4{font-size:13px;color:var(--text2);display:flex;align-items:center;gap:6px}
+.console-toolbar .console-actions{display:flex;gap:6px}
+.console-toolbar button{
+  padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;
+  color:var(--text3);font-size:11px;cursor:pointer;font-family:var(--font);transition:var(--transition);
+}
+.console-toolbar button:hover{background:var(--bg3);color:var(--text)}
+.console-output{
+  flex:1;overflow-y:auto;padding:8px 16px;font-family:var(--mono);font-size:11px;
+  line-height:1.6;color:var(--text2);
+}
+.console-output::-webkit-scrollbar{width:4px}
+.console-output::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:4px}
+.console-line{padding:2px 0;border-bottom:1px solid rgba(255,255,255,.02);display:flex;gap:8px;word-break:break-all}
+.console-line .c-time{color:var(--text3);flex-shrink:0;min-width:60px}
+.console-line .c-dir{font-weight:700;flex-shrink:0;min-width:16px}
+.console-line .c-dir.in{color:var(--green)}
+.console-line .c-dir.out{color:var(--blue)}
+.console-line .c-dir.evt{color:var(--amber)}
+.console-line .c-dir.err{color:var(--red)}
+.console-line .c-body{color:var(--text2)}
+.console-line .c-body .c-key{color:var(--accent2)}
+.console-line .c-body .c-str{color:var(--green)}
+.console-line .c-body .c-num{color:var(--amber)}
+
+/* ═══════════════ BOUNDING BOX ═══════════════ */
+.cam-bbox-overlay{
+  position:absolute;inset:0;pointer-events:none;z-index:2;
+}
+.cam-bbox-overlay .bbox{
+  position:absolute;border:2px solid var(--green);border-radius:4px;
+  transition:all .3s ease;
+}
+.cam-bbox-overlay .bbox-label{
+  position:absolute;top:-20px;left:0;padding:1px 6px;border-radius:3px;
+  background:var(--green);color:#000;font-size:8px;font-weight:700;
+  white-space:nowrap;letter-spacing:.3px;
+}
+.cam-bbox-overlay .bbox.searching{border-color:var(--amber);animation:bboxPulse 1s infinite}
+.cam-bbox-overlay .bbox.searching .bbox-label{background:var(--amber)}
+@keyframes bboxPulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ═══════════════ D-PAD ENHANCED ═══════════════ */
+.dpad button.pressed{
+  transform:scale(.88);background:var(--accent)!important;color:#fff!important;
+  border-color:var(--accent)!important;box-shadow:0 0 12px var(--accent-glow);
+}
+.dpad button.stop.pressed{
+  background:var(--red)!important;border-color:var(--red)!important;
+  box-shadow:0 0 12px rgba(239,68,68,.4);
+}
+
+/* ═══════════════ RESPONSIVE ADDITIONS ═══════════════ */
+@media(max-width:600px){
+  .state-bar{padding:0 12px;font-size:11px}
+  .state-bar .state-ping{font-size:9px}
+  .estop{width:56px;height:56px;font-size:9px;bottom:16px;right:16px}
+  .telemetry-panel{width:320px}
+  .console-toggle{padding:6px 10px;font-size:10px;bottom:16px;left:12px}
+}
+
+/* ═══════════════ UTILITIES ═══════════════ */
+.hidden{display:none!important}
+
+/* ═══════════════ VOICE VISUALIZER ═══════════════ */
+.voice-visualizer{
+  position:fixed;bottom:0;left:0;right:0;z-index:75;
+  display:flex;align-items:flex-end;justify-content:center;gap:3px;
+  height:0;overflow:hidden;transition:height .4s cubic-bezier(.4,0,.2,1);
+  pointer-events:none;padding-bottom:100px;
+}
+.voice-visualizer.active{height:160px}
+.voice-visualizer .vbar{
+  width:4px;border-radius:4px 4px 0 0;
+  background:linear-gradient(180deg,var(--accent),var(--accent2));
+  opacity:.6;transition:height .08s ease;
+  min-height:4px;
+}
+.voice-visualizer.speaking .vbar{
+  background:linear-gradient(180deg,var(--green),var(--blue));
+}
+/* Mic glow ring */
+.mic-glow-ring{
+  position:absolute;inset:-8px;border-radius:50%;
+  border:2px solid transparent;pointer-events:none;opacity:0;
+  transition:opacity .4s ease;
+}
+.input-btn.mic.recording .mic-glow-ring{
+  opacity:1;
+  border-color:rgba(239,68,68,.4);
+  animation:micGlowExpand 1.5s ease-out infinite;
+}
+.input-btn.mic.speaking .mic-glow-ring{
+  opacity:1;
+  border-color:rgba(124,92,255,.4);
+  animation:micGlowExpand 1.5s ease-out infinite;
+}
+@keyframes micGlowExpand{
+  0%{transform:scale(1);opacity:.7}
+  100%{transform:scale(1.8);opacity:0}
+}
+
+/* ═══════════════ CHAIN-OF-THOUGHT UI ═══════════════ */
+.cot-card{
+  margin:12px 0;padding:14px 16px;border-radius:var(--radius);
+  background:var(--glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  border:1px solid rgba(124,92,255,.15);
+  animation:fadeIn .3s;overflow:hidden;
+  box-shadow:0 4px 20px rgba(124,92,255,.08);
+}
+.cot-header{
+  display:flex;align-items:center;justify-content:space-between;
+  cursor:pointer;padding-bottom:8px;
+}
+.cot-header .cot-title{
+  font-size:13px;font-weight:600;color:var(--accent2);
+  display:flex;align-items:center;gap:8px;
+}
+.cot-header .cot-toggle{
+  font-size:10px;color:var(--text3);transition:transform .3s ease;
+}
+.cot-card.collapsed .cot-toggle{transform:rotate(-90deg)}
+.cot-card.collapsed .cot-steps{height:0;overflow:hidden;padding:0;margin:0}
+.cot-steps{
+  padding-top:8px;border-top:1px solid rgba(124,92,255,.1);
+  transition:height .3s ease;
+}
+.cot-step{
+  display:flex;align-items:flex-start;gap:10px;padding:6px 0;
+  font-size:12px;color:var(--text2);line-height:1.5;
+  animation:cotStepIn .4s ease-out;
+  font-family:var(--mono);
+}
+@keyframes cotStepIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+.cot-step .cot-icon{font-size:14px;flex-shrink:0;min-width:20px;text-align:center}
+.cot-step .cot-text{color:var(--text2)}
+.cot-step.active .cot-text{color:var(--accent2)}
+.cot-step.done .cot-text{color:var(--green)}
+.cot-step.done .cot-icon{color:var(--green)}
+.cot-step .cot-spinner{
+  display:inline-block;width:12px;height:12px;border:2px solid var(--accent);
+  border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;
+  margin-right:2px;
+}
+
+/* ═══════════════ TYPEWRITER EFFECT ═══════════════ */
+.msg-bubble.typewriter .tw-cursor{
+  display:inline-block;width:2px;height:1em;background:var(--accent);
+  margin-left:2px;vertical-align:text-bottom;
+  animation:twBlink .6s step-end infinite;
+}
+@keyframes twBlink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ═══════════════ ACTIVE GLOW EFFECTS ═══════════════ */
+.chat-container.ai-active::before{
+  content:'';position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:300px;height:300px;border-radius:50%;
+  background:radial-gradient(circle,rgba(124,92,255,.06) 0%,transparent 70%);
+  pointer-events:none;z-index:0;animation:ambientPulse 3s ease-in-out infinite;
+}
+@keyframes ambientPulse{0%,100%{opacity:.5;transform:translate(-50%,-50%) scale(1)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.3)}}
+
+/* Skeleton loading shimmer */
+.skeleton-line{
+  height:14px;border-radius:7px;margin:8px 0;
+  background:linear-gradient(90deg,var(--bg3) 25%,var(--bg4) 50%,var(--bg3) 75%);
+  background-size:200% 100%;animation:shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.skeleton-line:nth-child(1){width:85%}
+.skeleton-line:nth-child(2){width:70%}
+.skeleton-line:nth-child(3){width:55%}
+
+/* ═══════════════ SETTINGS PANEL GLASS ═══════════════ */
+.settings-panel{
+  width:min(440px,90vw);padding:24px;border-radius:var(--radius2);
+  background:rgba(22,22,42,.65);backdrop-filter:blur(28px) saturate(1.6);-webkit-backdrop-filter:blur(28px) saturate(1.6);
+  border:1px solid rgba(124,92,255,.12);box-shadow:0 24px 80px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.04);
+}
+
+/* ═══════════════ CHIP HOVER GLOW ═══════════════ */
+.chip{
+  padding:8px 16px;border-radius:20px;font-size:13px;font-weight:500;
+  background:rgba(22,22,42,.5);backdrop-filter:blur(12px) saturate(1.3);-webkit-backdrop-filter:blur(12px) saturate(1.3);
+  border:1px solid rgba(124,92,255,.12);color:var(--text2);
+  cursor:pointer;transition:all .25s ease;white-space:nowrap;
+  display:flex;align-items:center;gap:6px;
+  box-shadow:0 2px 10px rgba(0,0,0,.2),inset 0 1px 0 rgba(255,255,255,.04);
+}
+.chip:hover{
+  background:rgba(124,92,255,.15);border-color:var(--accent);color:var(--accent2);
+  box-shadow:0 0 20px rgba(124,92,255,.2),0 4px 15px rgba(0,0,0,.3);transform:translateY(-2px);
+}
+.chip:active{transform:scale(.96) translateY(0)}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ HEADER ═══════════ -->
+<header class="header">
+  <div class="logo">
+    <div class="logo-icon"><img src="/vlm/image/Kmutnb_logo.jpg" alt="KMUTNB"/></div>
+    <div>
+      <div class="logo-text">VORA</div>
+      <div class="logo-sub">Voice Oriented Robotics Assistant</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="status-dot" id="st-server"><span>Server</span></div>
+    <div class="status-dot" id="st-camera"><span>Camera</span></div>
+    <div class="status-dot" id="st-gw"><span>Gateway</span></div>
+    <button class="btn-icon" id="btn-tts-toggle" title="Toggle TTS">🔊</button>
+    <button class="btn-icon" id="btn-telemetry" title="Robot Telemetry">📊</button>
+    <button class="btn-icon" id="btn-memory" title="Object Memory">🧠</button>
+    <button class="btn-icon" id="btn-dpad" title="Manual Controls">🎮</button>
+    <button class="btn-icon" id="btn-settings" title="Settings">⚙️</button>
+  </div>
+</header>
+
+<!-- ═══════════ STATE BAR ═══════════ -->
+<div class="state-bar" id="state-bar" data-state="idle">
+  <span class="state-icon" id="state-icon">●</span>
+  <span class="state-text" id="state-text">Idle — พร้อมรับคำสั่ง</span>
+  <span class="state-ping" id="state-ping">
+    <span class="ping-dot" id="ping-dot"></span>
+    <span id="ping-text">-- ms</span>
+  </span>
+</div>
+
+<!-- ═══════════ MAIN ═══════════ -->
+<div class="main">
+  <!-- Camera Mini View -->
+  <div class="camera-mini hidden" id="camera-mini">
+    <img id="cam-mini-img" src="" alt="Camera"/>
+    <div class="cam-bbox-overlay" id="cam-mini-bbox"></div>
+    <div class="cam-label">● LIVE</div>
+    <div class="cam-expand">⛶</div>
+  </div>
+
+  <!-- Chat Area -->
+  <div class="chat-area" id="chat-area">
+    <div class="chat-container" id="chat-container">
+      <!-- Welcome Screen -->
+      <div class="welcome" id="welcome-screen">
+        <div class="welcome-icon"><img src="/vlm/image/Kmutnb_logo.jpg" alt="KMUTNB"/></div>
+        <h2>สวัสดีครับ ผม VORA</h2>
+        <p>ผู้ช่วยหุ่นยนต์อัจฉริยะ พร้อมรับคำสั่งเสียงหรือพิมพ์<br/>บอกผมได้เลยว่าต้องทำอะไรครับ</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Input Area -->
+  <div class="input-area">
+    <div class="input-area-inner">
+      <div class="transcript-bar" id="transcript-bar"></div>
+      <div class="chips" id="chips">
+        <div class="chip" data-cmd="หาปากกา">🔍 หาปากกา</div>
+        <div class="chip" data-cmd="หาดินสอ">🔍 หาดินสอ</div>
+        <div class="chip" data-cmd="ไปข้างหน้า">⬆️ เดินหน้า</div>
+        <div class="chip" data-cmd="ถอยหลัง">⬇️ ถอยหลัง</div>
+        <div class="chip" data-cmd="เลี้ยวซ้าย">⬅️ ซ้าย</div>
+        <div class="chip" data-cmd="เลี้ยวขวา">➡️ ขวา</div>
+        <div class="chip danger" data-cmd="หยุด">🛑 หยุด</div>
+      </div>
+      <div class="input-box" id="input-box">
+        <textarea id="text-input" rows="1" placeholder="พูดหรือพิมพ์คำสั่ง..." autocomplete="off"></textarea>
+        <button class="input-btn send" id="btn-send" title="Send">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+        <button class="input-btn mic" id="btn-mic" title="Voice Input">
+          <span class="mic-glow-ring"></span>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ CAMERA FULLSCREEN ═══════════ -->
+<div class="camera-full" id="camera-full">
+  <button class="cam-close" onclick="closeCameraFull()">✕</button>
+  <img id="cam-full-img" src="" alt="Camera"/>
+  <div class="cam-actions">
+    <button onclick="captureFrame()">📸 Capture</button>
+    <button onclick="sendCmd('อธิบายภาพ')">🧠 VLM Describe</button>
+    <button onclick="closeCameraFull()">✕ Close</button>
+  </div>
+</div>
+
+<!-- ═══════════ SETTINGS OVERLAY ═══════════ -->
+<div class="settings-overlay" id="settings-overlay">
+  <div class="settings-panel">
+    <h3>⚙️ Settings</h3>
+    <div class="settings-group">
+      <label>Gateway URL (Robot Controller)</label>
+      <input type="text" id="set-gw-url" placeholder="http://192.168.0.60:9001"/>
+    </div>
+    <div class="settings-group">
+      <label>Microphone</label>
+      <select id="set-mic"></select>
+    </div>
+    <div class="settings-group">
+      <label>Voice Auto-Send</label>
+      <select id="set-auto-send">
+        <option value="1">On — ประมวลผลคำสั่งเสียงอัตโนมัติ</option>
+        <option value="0">Off — แสดงเฉพาะ Transcript</option>
+      </select>
+    </div>
+    <div class="settings-group">
+      <label>Silence Timeout</label>
+      <select id="set-silence">
+        <option value="1000">1.0 sec</option>
+        <option value="1500" selected>1.5 sec</option>
+        <option value="2000">2.0 sec</option>
+        <option value="3000">3.0 sec</option>
+      </select>
+    </div>
+    <div class="settings-actions">
+      <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
+      <button class="btn-save" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ MEMORY SIDEBAR ═══════════ -->
+<div class="memory-overlay" id="memory-overlay"></div>
+<div class="memory-panel" id="memory-panel">
+  <div class="memory-header">
+    <h3>🧠 Object Memory</h3>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-icon" onclick="clearAllMemory()" title="ล้างความจำทั้งหมด" style="font-size:14px;color:var(--red)">🗑️</button>
+      <button class="btn-icon" onclick="closeMemory()">✕</button>
+    </div>
+  </div>
+  <div class="memory-list" id="memory-list">
+    <div class="memory-empty">ยังไม่มีข้อมูลที่จำได้</div>
+  </div>
+</div>
+
+<!-- ═══════════ D-PAD ═══════════ -->
+<div class="dpad-overlay" id="dpad-overlay">
+  <div class="dpad">
+    <button class="empty"></button>
+    <button data-dpad-cmd="ไปข้างหน้า">↑</button>
+    <button class="empty"></button>
+    <button data-dpad-cmd="เลี้ยวซ้าย">←</button>
+    <button class="stop" data-dpad-cmd="หยุด">⏹</button>
+    <button data-dpad-cmd="เลี้ยวขวา">→</button>
+    <button class="empty"></button>
+    <button data-dpad-cmd="ถอยหลัง">↓</button>
+    <button class="empty"></button>
+  </div>
+</div>
+
+<!-- ═══════════ EMERGENCY STOP ═══════════ -->
+<button class="estop" id="btn-estop" title="Emergency Stop">
+  <span class="estop-ring"></span>
+  E-STOP
+</button>
+
+<!-- ═══════════ TELEMETRY SIDEBAR ═══════════ -->
+<div class="telemetry-overlay" id="telemetry-overlay"></div>
+<div class="telemetry-panel" id="telemetry-panel">
+  <div class="telemetry-header">
+    <h3>📊 Robot Telemetry</h3>
+    <button class="btn-icon" onclick="closeTelemetry()">✕</button>
+  </div>
+  <div class="telemetry-body">
+    <div class="telem-card">
+      <h4>⚡ Power</h4>
+      <div class="telem-row">
+        <span class="telem-label">Battery</span>
+        <span class="telem-value" id="telem-batt">-- %</span>
+      </div>
+      <div class="telem-bar"><div class="telem-bar-fill" id="telem-batt-bar" style="width:0%;background:var(--green)"></div></div>
+      <div class="telem-row" style="margin-top:6px">
+        <span class="telem-label">Voltage</span>
+        <span class="telem-value" id="telem-volt">-- V</span>
+      </div>
+    </div>
+    <div class="telem-card">
+      <h4>🌐 Network</h4>
+      <div class="telem-row">
+        <span class="telem-label">Server Ping</span>
+        <span class="telem-value" id="telem-server-ping">-- ms</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">Gateway Ping</span>
+        <span class="telem-value" id="telem-gw-ping">-- ms</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">Camera FPS</span>
+        <span class="telem-value" id="telem-fps">--</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">Frame Size</span>
+        <span class="telem-value" id="telem-frame-size">-- KB</span>
+      </div>
+    </div>
+    <div class="telem-card">
+      <h4>📍 Position</h4>
+      <div class="telem-row">
+        <span class="telem-label">X</span>
+        <span class="telem-value" id="telem-pos-x">0.00 m</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">Y</span>
+        <span class="telem-value" id="telem-pos-y">0.00 m</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">θ (Heading)</span>
+        <span class="telem-value" id="telem-pos-th">0.0°</span>
+      </div>
+      <div class="telem-mini-map" id="telem-map" onclick="toggleExpandedMap()" title="Click to expand">
+        <canvas id="map-canvas" width="400" height="400"></canvas>
+        <span class="map-label" id="map-label">Loading map...</span>
+      </div>
+    </div>
+    <!-- Expanded Map Overlay -->
+    <div class="map-expanded" id="map-expanded">
+      <div class="map-header">
+        <h3>🗺️ SLAM Map — Real-time</h3>
+        <button class="map-close" onclick="toggleExpandedMap()">✕</button>
+      </div>
+      <div class="map-canvas-wrap">
+        <canvas id="map-canvas-big" width="800" height="800"></canvas>
+      </div>
+    </div>
+    <div class="telem-card">
+      <h4>🤖 System</h4>
+      <div class="telem-row">
+        <span class="telem-label">Model</span>
+        <span class="telem-value" id="telem-model">--</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">GPU</span>
+        <span class="telem-value" id="telem-gpu">--</span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">Uptime</span>
+        <span class="telem-value" id="telem-uptime">--</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ CONSOLE LOG ═══════════ -->
+<button class="console-toggle" id="btn-console">
+  🖥️ Terminal
+  <span class="console-count" id="console-count">0</span>
+</button>
+<div class="console-panel" id="console-panel">
+  <div class="console-toolbar">
+    <h4>🖥️ Debug Console</h4>
+    <div class="console-actions">
+      <button onclick="clearConsole()">Clear</button>
+      <button onclick="toggleConsole()">Close</button>
+    </div>
+  </div>
+  <div class="console-output" id="console-output"></div>
+</div>
+
+<!-- ═══════════ VOICE VISUALIZER ═══════════ -->
+<div class="voice-visualizer" id="voice-visualizer"></div>
+
+<!-- ═══════════ TTS AUDIO ═══════════ -->
+<audio id="tts-audio" preload="none"></audio>
+
+<script>
+/* ================================================================
+   VORA Frontend — Gemini-Inspired Modern UI
+   ================================================================
+   Architecture:
+   - Server (A6000 :8080): Camera frames, VLM analysis, STT base
+   - Gateway (LAN :9001): Robot commands, audio proxy, dashboard events,
+                           object memory, visual search
+   ================================================================ */
+
+// ── Config ──────────────────────────────────────────────────
+const hostname = window.location.hostname;
+const isSecure = location.protocol === 'https:';
+const isTailscale = hostname.endsWith('.ts.net');
+
+let SERVER_BASE, SERVER_WS;
+if (isTailscale) {
+  SERVER_BASE = `https://${hostname}`;
+  SERVER_WS = `wss://${hostname}`;
+} else {
+  const port = location.port || '8080';
+  SERVER_BASE = `${location.protocol}//${hostname}:${port}`;
+  SERVER_WS = `${isSecure ? 'wss' : 'ws'}://${hostname}:${port}`;
+}
+
+// Gateway is typically on LAN — configurable via settings
+let GW_BASE = localStorage.getItem('vora_gw_url') || 'http://192.168.0.60:9001';
+let GW_WS   = GW_BASE.replace(/^http/, 'ws');
+
+let AUTO_SEND       = localStorage.getItem('vora_auto_send') !== '0';
+let SILENCE_TIMEOUT = parseInt(localStorage.getItem('vora_silence') || '1500');
+let MIC_DEVICE_ID   = localStorage.getItem('vora_mic') || '';
+
+console.log(`🌐 Server: ${SERVER_BASE}`);
+console.log(`🔌 Gateway: ${GW_BASE}`);
+
+// ── DOM Refs ────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const chatArea      = $('chat-area');
+const chatContainer = $('chat-container');
+const welcomeScreen = $('welcome-screen');
+const textInput     = $('text-input');
+const btnMic        = $('btn-mic');
+const btnSend       = $('btn-send');
+const transcriptBar = $('transcript-bar');
+const ttsAudio      = $('tts-audio');
+const camMini       = $('camera-mini');
+const camMiniImg    = $('cam-mini-img');
+const camFullImg    = $('cam-full-img');
+
+// ── State ───────────────────────────────────────────────────
+let audioWs      = null;
+let dashWs       = null;
+let isRecording  = false;
+let audioCtx, mediaStream, processor;
+let sampleRate   = 16000;
+let chatStarted  = false;
+let cameraLive   = false;
+let gwAvailable  = false;
+let ttsMuted     = localStorage.getItem('vora_tts_muted') === '1';
+let robotState   = 'idle';          // idle | listening | processing | executing | searching
+let _searchPollTimer = null;        // HTTP polling fallback for search status (mixed-content WS fallback)
+let _lastSearchStatus = null;       // track last polled status to avoid duplicate handling
+let consoleOpen  = false;
+let consoleMsgs  = 0;
+let serverPingMs = null;
+let gwPingMs     = null;
+let cameraFps    = 0;
+let frameCount   = 0;
+let lastFpsTime  = Date.now();
+let robotPos     = { x: 0, y: 0, th: 0 };
+let trailPoints  = [];
+let startTime    = Date.now();
+
+// ── Auto-resize textarea ────────────────────────────────────
+textInput.addEventListener('input', () => {
+  textInput.style.height = 'auto';
+  textInput.style.height = Math.min(textInput.scrollHeight, 120) + 'px';
+  btnSend.classList.toggle('has-text', textInput.value.trim().length > 0);
+});
+textInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitText(); }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  INITIALIZATION
+// ═══════════════════════════════════════════════════════════
+async function init() {
+  console.log('🚀 VORA Init...');
+  checkServer();
+  checkGateway();
+  connectDashboard();
+  startCamera();
+  enumerateMics();
+  setupChips();
+  setupHeaderButtons();
+  setupDpad();
+  setupEstop();
+  setupConsole();
+  loadSettings();
+  applyTTSMute();
+  setRobotState('idle');
+  startPingLoop();
+  startTelemetryLoop();
+}
+
+function setupChips() {
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.onclick = () => sendCmd(chip.dataset.cmd);
+  });
+}
+
+function setupHeaderButtons() {
+  $('btn-settings').onclick = openSettings;
+  $('btn-memory').onclick = openMemory;
+  // D-pad toggle handled by floating IIFE below
+  $('btn-tts-toggle').onclick = toggleTTSMute;
+  $('btn-telemetry').onclick = openTelemetry;
+  $('memory-overlay').onclick = closeMemory;
+  $('telemetry-overlay').onclick = closeTelemetry;
+  camMini.onclick = openCameraFull;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  HEALTH CHECKS
+// ═══════════════════════════════════════════════════════════
+async function checkServer() {
+  try {
+    const r = await fetch(`${SERVER_BASE}/health`, {signal: AbortSignal.timeout(5000)});
+    if (r.ok) { setStatus('st-server', true); return true; }
+  } catch(e) {}
+  setStatus('st-server', false);
+  return false;
+}
+
+async function checkGateway() {
+  try {
+    const r = await fetch(`${GW_BASE}/health`, {signal: AbortSignal.timeout(5000)});
+    if (r.ok) { setStatus('st-gw', true); gwAvailable = true; return true; }
+  } catch(e) {}
+  setStatus('st-gw', false);
+  gwAvailable = false;
+  return false;
+}
+
+function setStatus(id, on) {
+  $(id).classList.toggle('on', on);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CHAT MESSAGES
+// ═══════════════════════════════════════════════════════════
+function ensureChatStarted() {
+  if (!chatStarted) {
+    welcomeScreen.style.display = 'none';
+    chatStarted = true;
+  }
+}
+
+function addMsg(role, html) {
+  ensureChatStarted();
+  const time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
+
+  if (role === 'system') {
+    const el = document.createElement('div');
+    el.className = 'msg-system';
+    el.innerHTML = `<span>${html}</span>`;
+    chatContainer.appendChild(el);
+  } else {
+    const el = document.createElement('div');
+    el.className = `msg-group ${role}`;
+    const avatar = role === 'vora' ? '🤖' : '👤';
+    el.innerHTML = `
+      <div class="msg-avatar">${avatar}</div>
+      <div class="msg-content">
+        <div class="msg-bubble">${html}</div>
+        <div class="msg-time">${time}</div>
+      </div>`;
+    chatContainer.appendChild(el);
+  }
+  scrollChat();
+}
+
+function scrollChat() {
+  requestAnimationFrame(() => chatArea.scrollTop = chatArea.scrollHeight);
+}
+
+// Skeleton thinking indicator
+function showThinkingSkeleton() {
+  ensureChatStarted();
+  const el = document.createElement('div');
+  el.className = 'msg-group vora';
+  el.id = 'thinking-skeleton';
+  el.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-content">
+      <div class="msg-bubble" style="min-width:200px">
+        <div class="skeleton-line"></div>
+        <div class="skeleton-line"></div>
+        <div class="skeleton-line"></div>
+      </div>
+    </div>`;
+  chatContainer.appendChild(el);
+  scrollChat();
+  return el;
+}
+
+function removeThinkingSkeleton() {
+  const el = $('thinking-skeleton');
+  if (el) el.remove();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SEARCH PROGRESS CARDS
+// ═══════════════════════════════════════════════════════════
+function showSearchCard(target) {
+  ensureChatStarted();
+  // Remove any previous search card
+  const prev = $('active-search');
+  if (prev) prev.remove();
+
+  const el = document.createElement('div');
+  el.className = 'search-card';
+  el.id = 'active-search';
+  el.innerHTML = `
+    <div class="search-header">
+      <span class="search-icon">🔍</span>
+      <span class="search-title">กำลังค้นหา: ${target}</span>
+    </div>
+    <div class="search-status" id="search-status-text">เริ่มค้นหา...</div>
+    <div class="search-progress"><div class="search-progress-bar" id="search-progress-bar"></div></div>
+    <button class="search-cancel" onclick="cancelSearch()">ยกเลิกการค้นหา</button>`;
+  chatContainer.appendChild(el);
+  scrollChat();
+}
+
+function updateSearchProgress(step, total, status) {
+  const bar = $('search-progress-bar');
+  const text = $('search-status-text');
+  if (bar) bar.style.width = `${Math.min((step/total)*100, 100)}%`;
+  if (text) text.textContent = status;
+  scrollChat();
+}
+
+function removeSearchCard() {
+  const el = $('active-search');
+  if (el) el.remove();
+}
+
+function showFoundCard(target, imageUrl, description) {
+  removeSearchCard();
+  ensureChatStarted();
+  const el = document.createElement('div');
+  el.className = 'found-card';
+  const imgHtml = imageUrl ? `<img class="found-img" src="${imageUrl}" onerror="this.style.display='none'" alt="${target}"/>` : '';
+  const descHtml = description ? `<div class="found-text">${description}</div>` : '';
+  el.innerHTML = `
+    <div class="found-header">✅ เจอแล้ว: ${target}</div>
+    ${imgHtml}${descHtml}`;
+  chatContainer.appendChild(el);
+  scrollChat();
+}
+
+function showNotFoundCard(target) {
+  removeSearchCard();
+  addMsg('vora', `❌ ไม่เจอ <strong>${target}</strong> ครับ ลองค้นหาใหม่ได้นะครับ`);
+}
+
+function showObstacleCard(data) {
+  ensureChatStarted();
+  const el = document.createElement('div');
+  el.className = 'obstacle-card';
+  const strategies = {
+    go_around_left: '← หลบซ้าย',
+    go_around_right: '→ หลบขวา',
+    wait: '⏸️ รอ', backup: '⬇️ ถอยหลัง',
+    reroute: '🗺️ เปลี่ยนเส้นทาง', stop: '🛑 หยุด'
+  };
+  el.innerHTML = `⚠️ <strong>เจอสิ่งกีดขวาง</strong> — ${data.obstacle_type || 'unknown'} → ${strategies[data.strategy] || data.strategy || 'avoiding'}`;
+  chatContainer.appendChild(el);
+  scrollChat();
+}
+
+async function cancelSearch() {
+  try {
+    await fetch(`${GW_BASE}/search/cancel`, {method: 'POST'});
+    removeSearchCard();
+    addMsg('system', '🔍 ยกเลิกการค้นหาแล้ว');
+  } catch(e) {
+    addMsg('system', '❌ ไม่สามารถยกเลิกได้');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SEND COMMANDS
+// ═══════════════════════════════════════════════════════════
+function submitText() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  textInput.value = '';
+  textInput.style.height = 'auto';
+  btnSend.classList.remove('has-text');
+  sendCmd(text);
+}
+
+async function sendCmd(text) {
+  addMsg('user', text);
+  setRobotState('processing');
+  logConsole('out', `Command: "${text}"`);
+
+  // Show skeleton thinking indicator
+  const skeleton = showThinkingSkeleton();
+
+  // Try Gateway first (has full 3-level features)
+  if (gwAvailable) {
+    try {
+      const t0 = performance.now();
+      const r = await fetch(`${GW_BASE}/gw/text`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text, lang: 'th'}),
+        signal: AbortSignal.timeout(10000)
+      });
+      const data = await r.json();
+      const rtt = Math.round(performance.now() - t0);
+      logConsole('in', `GW response (${rtt}ms): ${JSON.stringify(data).substring(0, 300)}`);
+      removeThinkingSkeleton();
+
+      if (data.ok) {
+        if (data.mode === 'motion') {
+          addMsgTypewriter('vora', formatMotion(data.motion));
+          setRobotState('executing');
+          setTimeout(() => setRobotState('idle'), (data.motion?.duration || 2) * 1000 + 500);
+        } else if (data.mode === 'multi_step') {
+          addMsgTypewriter('vora', `✅ ทำ ${data.steps} ขั้นตอนเสร็จแล้วครับ`);
+          setRobotState('executing');
+          setTimeout(() => setRobotState('idle'), 3000);
+        } else if (data.mode === 'visual_search') {
+          showSearchCard(data.target);
+          // Chain-of-Thought for search
+          showChainOfThought(data.target);
+          addCotStep('🔍', `Analyzing intent: "${text}"`, 'done');
+          addCotStep('🎯', `Target identified: <strong>${data.target}</strong>`, 'done');
+          addCotStep('📷', 'Initializing camera scan...', 'active');
+          setRobotState('searching');
+          // Start HTTP polling as fallback (Dashboard WS may be blocked by mixed-content)
+          startSearchPolling();
+        } else if (data.mode === 'planner') {
+          addMsgTypewriter('vora', '✅ กำลังดำเนินการตามแผนครับ');
+          setRobotState('executing');
+        } else if (data.mode === 'chitchat') {
+          addMsgTypewriter('vora', data.reply || '🤖 ครับ');
+          setRobotState('idle');
+        } else {
+          addMsgTypewriter('vora', '✅ รับคำสั่งแล้วครับ');
+          setRobotState('idle');
+        }
+      } else {
+        // Gateway couldn't understand — try Server pipeline as fallback
+        try {
+          const r2 = await fetch(`${SERVER_BASE}/pipeline/command`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text, session_id: 'webapp', lang: 'th'}),
+            signal: AbortSignal.timeout(30000)
+          });
+          const d2 = await r2.json();
+          if (d2.success && d2.response_text) {
+            addMsgTypewriter('vora', d2.response_text);
+          } else {
+            addMsgTypewriter('vora', `🤔 ไม่เข้าใจคำสั่ง "${text}" ลองพูดใหม่นะครับ`);
+          }
+        } catch(e2) {
+          addMsgTypewriter('vora', `🤔 ไม่เข้าใจคำสั่ง "${text}" ลองพูดใหม่นะครับ`);
+        }
+        setRobotState('idle');
+      }
+      return;
+    } catch(e) {
+      console.warn('Gateway command failed, trying Server:', e);
+      logConsole('err', `GW error: ${e.message}`);
+      removeThinkingSkeleton();
+    }
+  }
+
+  // Fallback to Server pipeline (works without Gateway)
+  try {
+    const t0 = performance.now();
+    const r = await fetch(`${SERVER_BASE}/pipeline/command`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, session_id: 'webapp', lang: 'th'}),
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await r.json();
+    const rtt = Math.round(performance.now() - t0);
+    logConsole('in', `Server pipeline (${rtt}ms): ${JSON.stringify(data).substring(0, 300)}`);
+    removeThinkingSkeleton();
+
+    if (data.success && data.response_text) {
+      // Determine how to display based on intent
+      const intent = data.intent || '';
+      if (intent === 'control' && data.commands && data.commands.length > 0) {
+        addMsgTypewriter('vora', data.response_text);
+        addMsg('system', `⚙️ คำสั่ง: ${data.commands.map(c => c.cmd).join(', ')} (Server-only — ไม่ส่งหุ่นยนต์)`);
+        setRobotState('idle');
+      } else if (intent === 'find_object' && data.target) {
+        addMsgTypewriter('vora', data.response_text);
+        addMsg('system', `🔍 ต้องการหา: ${data.target} (ต้องเชื่อมต่อ Gateway เพื่อค้นหาจริง)`);
+        setRobotState('idle');
+      } else {
+        // chitchat, question, etc. — just display with typewriter
+        addMsgTypewriter('vora', data.response_text);
+        setRobotState('idle');
+      }
+
+      // TTS — speak response via server
+      if (data.response_text && !ttsMuted) {
+        playTTSFromServer(data.response_text);
+      }
+    } else if (data.response_text) {
+      addMsgTypewriter('vora', data.response_text);
+      setRobotState('idle');
+    } else {
+      addMsg('system', '⚠️ Server ไม่มีคำตอบ');
+      setRobotState('idle');
+    }
+  } catch(e2) {
+    removeThinkingSkeleton();
+    addMsg('system', '❌ ไม่สามารถเชื่อมต่อ Server ได้');
+    logConsole('err', `Server error: ${e2.message}`);
+    setRobotState('idle');
+  }
+}
+
+function formatMotion(m) {
+  if (!m) return '✅ ทำแล้วครับ';
+  if (m.type === 'stop') return '🛑 หยุดแล้วครับ';
+  const parts = [];
+  if (m.linear_x > 0) parts.push('⬆️ เดินหน้า');
+  if (m.linear_x < 0) parts.push('⬇️ ถอยหลัง');
+  if (m.angular_z > 0) parts.push('⬅️ เลี้ยวซ้าย');
+  if (m.angular_z < 0) parts.push('➡️ เลี้ยวขวา');
+  if (m.linear_y > 0) parts.push('↗️ เลื่อนซ้าย');
+  if (m.linear_y < 0) parts.push('↙️ เลื่อนขวา');
+  return (parts.length ? parts.join(' + ') : '✅ ทำแล้ว') + ' ครับ';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SEARCH STATUS POLLING (Fallback when Dashboard WS blocked by mixed-content)
+//  Browser blocks ws:// from https:// page. Use HTTP polling as fallback.
+// ═══════════════════════════════════════════════════════════
+function startSearchPolling() {
+  stopSearchPolling();
+  _lastSearchStatus = null;
+  console.log('🔄 Starting search status polling (WS fallback)');
+  _searchPollTimer = setInterval(async () => {
+    try {
+      // Try Gateway first (direct LAN), then Server (Tailscale) as fallback
+      let data = null;
+      try {
+        const r = await fetch(`${GW_BASE}/search/status`, {signal: AbortSignal.timeout(2000)});
+        if (r.ok) { const d = await r.json(); data = d.last_event || null; }
+      } catch(e) {
+        // Gateway unreachable — try Server-side relay
+        try {
+          const r2 = await fetch(`${SERVER_BASE}/pipeline/search-status`, {signal: AbortSignal.timeout(3000)});
+          if (r2.ok) { const d2 = await r2.json(); if (d2.status && d2.status !== 'none') data = d2; }
+        } catch(e2) { /* both failed */ }
+      }
+      if (!data) return;
+      const st = data.status;
+      // Only handle if status changed
+      if (st === _lastSearchStatus) return;
+      _lastSearchStatus = st;
+      // Forward to the same handler as dashboard WS
+      if (['found', 'not_found', 'cancelled', 'error', 'multi_complete'].includes(st)) {
+        console.log(`📡 Poll got terminal: ${st}`);
+        handleDashboardEvent(data);
+        stopSearchPolling();
+      } else if (st === 'scanning' || st === 'approaching') {
+        handleDashboardEvent(data);
+      }
+    } catch(e) { /* ignore */ }
+  }, 2000);
+}
+
+function stopSearchPolling() {
+  if (_searchPollTimer) { clearInterval(_searchPollTimer); _searchPollTimer = null; }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DASHBOARD WEBSOCKET (Real-time events from Gateway)
+// ═══════════════════════════════════════════════════════════
+let dashReconnectTimer = null;
+
+function connectDashboard() {
+  if (dashWs && dashWs.readyState <= 1) return;
+  if (dashReconnectTimer) clearTimeout(dashReconnectTimer);
+
+  const url = `${GW_WS}/gw/dashboard`;
+  console.log('📡 Dashboard WS:', url);
+
+  try { dashWs = new WebSocket(url); } catch(e) { scheduleDashReconnect(); return; }
+
+  dashWs.onopen = () => {
+    console.log('✅ Dashboard connected');
+    setStatus('st-gw', true);
+    gwAvailable = true;
+  };
+
+  dashWs.onmessage = e => {
+    try {
+      const data = JSON.parse(e.data);
+      logConsole('evt', `Dashboard: ${JSON.stringify(data).substring(0, 250)}`);
+      handleDashboardEvent(data);
+    }
+    catch(err) { console.warn('Dashboard msg parse error:', err); }
+  };
+
+  dashWs.onclose = () => {
+    console.log('Dashboard WS closed');
+    scheduleDashReconnect();
+  };
+
+  dashWs.onerror = () => {};
+}
+
+function scheduleDashReconnect() {
+  if (dashReconnectTimer) clearTimeout(dashReconnectTimer);
+  dashReconnectTimer = setTimeout(connectDashboard, 4000);
+}
+
+function handleDashboardEvent(data) {
+  const type = (data.type || data.event || '').toLowerCase();
+  const status = (data.status || '').toLowerCase();
+
+  // ─── Handle search_status wrapper (Gateway sends "type":"search_status" + "status":"found") ───
+  if (type === 'search_status') {
+    switch(status) {
+      case 'started': case 'multi_started':
+        showSearchCard(data.target || data.targets?.join(', ') || '...');
+        setRobotState('searching');
+        showBBox('searching', data.target || '...');
+        // Chain-of-Thought
+        if (!$('active-cot')) {
+          showChainOfThought(data.target);
+          addCotStep('🔍', `Target: <strong>${data.target || '...'}</strong>`, 'done');
+          addCotStep('📷', 'Scanning camera feed...', 'active');
+        }
+        return;
+      case 'scanning':
+        updateSearchProgress(
+          data.iteration || data.step || 0,
+          data.max_iterations || data.total_steps || 12,
+          `สแกนรอบที่ ${data.iteration || data.step || '?'}/${data.max_iterations || data.total_steps || '?'} (VLM ${data.total_checks || '?'} ครั้ง)`
+        );
+        setRobotState('searching');
+        // CoT step
+        addCotStep('🗺️', `Scan iteration ${data.iteration || data.step || '?'} — VLM analyzing frame...`, 'active');
+        return;
+      case 'approaching':
+        // Robot is moving toward the detected object
+        addCotStep('🚶', `Approaching ${data.target} — step ${data.step || '?'}/${data.max_steps || '?'}`, 'active');
+        updateSearchProgress(
+          data.step || 0,
+          data.max_steps || 6,
+          `🚶 เคลื่อนที่เข้าหา ${data.target} (${data.step || '?'}/${data.max_steps || '?'})`
+        );
+        setRobotState('searching');
+        return;
+      case 'found':
+        // CoT finish
+        addCotStep('🎯', `Object localized: ${data.location || 'detected'}`, 'done');
+        addCotStep('✅', `Target <strong>${data.target}</strong> found!`, 'done');
+        finishChainOfThought();
+        showFoundCard(
+          data.target || 'Object',
+          data.capture_url ? `${SERVER_BASE}${data.capture_url}` : null,
+          data.announce || data.description || ''
+        );
+        showBBox('found', data.target, data.location);
+        setRobotState('idle');
+        return;
+      case 'not_found':
+        addCotStep('❌', `Target not found after scanning`, 'done');
+        finishChainOfThought();
+        showNotFoundCard(data.target || 'Object');
+        clearBBox();
+        setRobotState('idle');
+        return;
+      case 'cancelled':
+        finishChainOfThought();
+        removeSearchCard();
+        addMsg('system', '🔍 การค้นหาถูกยกเลิก');
+        clearBBox();
+        setRobotState('idle');
+        return;
+      case 'multi_complete':
+        finishChainOfThought();
+        removeSearchCard();
+        if (data.summary) addMsgTypewriter('vora', data.summary);
+        clearBBox();
+        setRobotState('idle');
+        return;
+      case 'error':
+        finishChainOfThought();
+        removeSearchCard();
+        addMsg('system', `❌ ค้นหาผิดพลาด: ${data.error || 'unknown'}`);
+        clearBBox();
+        setRobotState('idle');
+        return;
+    }
+  }
+
+  // ─── Handle search_obstacle ───
+  if (type === 'search_obstacle') {
+    showObstacleCard(data);
+    return;
+  }
+
+  // ─── Legacy event types (for backward compat) ───
+  switch(type) {
+    case 'search_start':
+      showSearchCard(data.target || '...');
+      break;
+    case 'search_progress':
+      updateSearchProgress(data.step || 0, data.total_steps || 12, data.status || `Step ${data.step}`);
+      break;
+    case 'search_found':
+      showFoundCard(
+        data.target || 'Object',
+        data.capture_url ? `${SERVER_BASE}${data.capture_url}` : null,
+        data.description || ''
+      );
+      break;
+    case 'search_not_found':
+      showNotFoundCard(data.target || 'Object');
+      break;
+    case 'search_cancelled':
+      removeSearchCard();
+      addMsg('system', '🔍 การค้นหาถูกยกเลิก');
+      break;
+    case 'obstacle':
+      showObstacleCard(data);
+      break;
+    case 'tts_audio':
+      playTTSAudio(data.audio_base64, data.format || 'wav');
+      break;
+    // STT passthrough from Gateway audio proxy
+    case 'partial':
+      transcriptBar.innerHTML = `<span style="color:var(--accent2)">🎤 ${data.text || '...'}</span>`;
+      transcriptBar.classList.add('active');
+      break;
+    case 'final': case 'result': case 'transcript_final':
+      if (data.text) {
+        transcriptBar.textContent = `✅ "${data.text}"`;
+        setTimeout(() => { transcriptBar.textContent = ''; transcriptBar.classList.remove('active'); }, 2000);
+      }
+      break;
+    default:
+      if (data.text && type) console.log(`[Dash] ${type}: ${data.text}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TTS AUDIO PLAYBACK
+// ═══════════════════════════════════════════════════════════
+function playTTSAudio(base64, format) {
+  if (!base64 || ttsMuted) return;
+  try {
+    const mime = format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+    ttsAudio.src = `data:${mime};base64,${base64}`;
+    btnMic.classList.add('speaking');
+    startSpeakingVisualizer();
+    ttsAudio.onended = () => { btnMic.classList.remove('speaking'); stopVoiceVisualizer(); };
+    ttsAudio.play().catch(e => { console.warn('TTS autoplay blocked:', e); btnMic.classList.remove('speaking'); stopVoiceVisualizer(); });
+  } catch(e) { console.warn('TTS error:', e); }
+}
+
+async function playTTSFromServer(text) {
+  if (!text || ttsMuted) return;
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/server/tts/speak`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (r.ok) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      ttsAudio.src = url;
+      btnMic.classList.add('speaking');
+      startSpeakingVisualizer();
+      ttsAudio.onended = () => { btnMic.classList.remove('speaking'); stopVoiceVisualizer(); URL.revokeObjectURL(url); };
+      ttsAudio.play().catch(e => { console.warn('TTS autoplay blocked:', e); btnMic.classList.remove('speaking'); stopVoiceVisualizer(); });
+    }
+  } catch(e) { console.warn('Server TTS error:', e); }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  VOICE INPUT (Mic → Gateway /gw/audio → STT → Commands)
+// ═══════════════════════════════════════════════════════════
+btnMic.onclick = toggleMic;
+btnSend.onclick = submitText;
+
+function toggleMic() {
+  if (isRecording) {
+    stopRecording();
+    setRobotState('idle');
+  } else {
+    startRecording();
+    setRobotState('listening');
+  }
+}
+
+async function startRecording() {
+  try {
+    const constraints = {
+      audio: {
+        deviceId: MIC_DEVICE_ID ? {exact: MIC_DEVICE_ID} : undefined,
+        channelCount: 1, echoCancellation: true, noiseSuppression: true,
+        sampleRate: {ideal: 16000},
+      }
+    };
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    sampleRate = audioCtx.sampleRate;
+
+    // Try Gateway audio WS first, fall back to Server STT if blocked (mixed-content)
+    const gwWsUrl = `${GW_WS}/gw/audio`;
+    const serverWsUrl = `${SERVER_WS}/ws/stt`;
+    let usingServerFallback = false;
+
+    function connectAudioWs(url, isFallback) {
+      audioWs = new WebSocket(url);
+      usingServerFallback = isFallback;
+
+      audioWs.onopen = () => {
+        console.log(isFallback ? '🎤 STT via Server (fallback)' : '🎤 STT via Gateway');
+        audioWs.send(JSON.stringify({rate: sampleRate, lang: 'th'}));
+
+        const source = audioCtx.createMediaStreamSource(mediaStream);
+        processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = e => {
+          if (audioWs && audioWs.readyState === WebSocket.OPEN) {
+            const pcm = e.inputBuffer.getChannelData(0);
+            const int16 = new Int16Array(pcm.length);
+            for (let i = 0; i < pcm.length; i++) int16[i] = Math.max(-32768, Math.min(32767, pcm[i] * 32767));
+            audioWs.send(int16.buffer);
+          }
+        };
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+
+        isRecording = true;
+        btnMic.classList.add('recording');
+        transcriptBar.textContent = '🎤 Listening...';
+        transcriptBar.classList.add('active');
+      };
+
+      audioWs.onmessage = e => {
+        try {
+          const data = JSON.parse(e.data);
+          if (usingServerFallback) {
+            handleServerSTTEvent(data);
+          } else {
+            handleAudioEvent(data);
+          }
+        } catch(err) {}
+      };
+
+      audioWs.onclose = () => { if (isRecording) stopRecording(); };
+      audioWs.onerror = e => {
+        console.error('Audio WS error:', e);
+        if (!isFallback) {
+          // Gateway WS failed — try Server STT fallback (wss:// works from HTTPS page)
+          console.warn('⚠️ Gateway audio WS blocked — falling back to Server STT');
+          audioWs = null;
+          connectAudioWs(serverWsUrl, true);
+        } else {
+          addMsg('system', '⚠️ ไม่สามารถเชื่อมต่อเสียง — ลอง refresh หน้าเว็บ');
+          stopRecording();
+        }
+      };
+    }
+
+    connectAudioWs(gwWsUrl, false);
+  } catch(e) {
+    console.error('Mic error:', e);
+    addMsg('system', '❌ ไม่สามารถเข้าถึงไมค์ — ตรวจสอบ Permissions');
+  }
+}
+
+/** Handle STT events from Server fallback (text only — send to Gateway for command processing) */
+function handleServerSTTEvent(data) {
+  const type = (data.type || '').toLowerCase();
+  if (type === 'partial') {
+    transcriptBar.innerHTML = `<span style="color:var(--accent2)">🎤 ${data.text || '...'}</span>`;
+  } else if (['final','result','transcript_final'].includes(type)) {
+    const text = data.text || '';
+    if (text) {
+      transcriptBar.textContent = `✅ "${text}"`;
+      addMsg('user', text);
+      // Forward to Gateway via HTTP (since WS is blocked, but HTTP works)
+      sendCmd(text);
+      setTimeout(() => { transcriptBar.textContent = isRecording ? '🎤 Listening...' : ''; }, 1500);
+    }
+  } else if (type === 'connected') {
+    transcriptBar.textContent = '🎤 Listening...';
+  }
+}
+
+function stopRecording() {
+  isRecording = false;
+  btnMic.classList.remove('recording');
+  transcriptBar.textContent = '';
+  transcriptBar.classList.remove('active');
+  stopVoiceVisualizer();
+  if (processor) { processor.disconnect(); processor = null; }
+  if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioWs) { audioWs.close(); audioWs = null; }
+}
+
+function handleAudioEvent(data) {
+  const type = (data.type || '').toLowerCase();
+  if (type === 'partial') {
+    transcriptBar.innerHTML = `<span style="color:var(--accent2)">🎤 ${data.text || '...'}</span>`;
+  } else if (['final','result','transcript_final'].includes(type)) {
+    const text = data.text || '';
+    if (text) {
+      transcriptBar.textContent = `✅ "${text}"`;
+      // Gateway /gw/audio on_server_text callback already processes the command
+      // Just show the transcript in chat
+      addMsg('user', text);
+      setTimeout(() => { transcriptBar.textContent = isRecording ? '🎤 Listening...' : ''; }, 1500);
+    }
+  } else if (type === 'connected') {
+    transcriptBar.textContent = '🎤 Listening...';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CAMERA
+// ═══════════════════════════════════════════════════════════
+function startCamera() {
+  cameraLive = true;
+  camMini.classList.remove('hidden');
+  camMini.classList.add('live');
+
+  async function fetchFrame() {
+    if (!cameraLive) return;
+    try {
+      const r = await fetch(`${SERVER_BASE}/camera/frame`, {cache: 'no-store'});
+      if (r.ok) {
+        const blob = await r.blob();
+        if (blob.size > 100) {
+          const url = URL.createObjectURL(blob);
+          camMiniImg.onload = () => URL.revokeObjectURL(url);
+          camMiniImg.src = url;
+          camFullImg.src = url;
+          setStatus('st-camera', true);
+          // Track FPS
+          frameCount++;
+          const now = Date.now();
+          if (now - lastFpsTime >= 2000) {
+            cameraFps = Math.round(frameCount / ((now - lastFpsTime) / 1000));
+            frameCount = 0;
+            lastFpsTime = now;
+          }
+        }
+      }
+    } catch(e) {
+      setStatus('st-camera', false);
+    }
+    if (cameraLive) setTimeout(fetchFrame, 150);  // ~6-7 fps
+  }
+  fetchFrame();
+}
+
+function openCameraFull() { $('camera-full').classList.add('show'); }
+function closeCameraFull() { $('camera-full').classList.remove('show'); }
+
+async function captureFrame() {
+  try {
+    const r = await fetch(`${SERVER_BASE}/camera/capture`, {method: 'POST'});
+    const data = await r.json();
+    if (data.success) addMsg('system', `📸 Captured: ${data.filename}`);
+    else addMsg('system', `❌ Capture failed`);
+  } catch(e) { addMsg('system', '❌ Capture error'); }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MICROPHONE ENUMERATION
+// ═══════════════════════════════════════════════════════════
+async function enumerateMics() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const mics = devices.filter(d => d.kind === 'audioinput');
+    $('set-mic').innerHTML = mics.map((m, i) =>
+      `<option value="${m.deviceId}" ${m.deviceId === MIC_DEVICE_ID ? 'selected' : ''}>${m.label || `Mic ${i+1}`}</option>`
+    ).join('');
+  } catch(e) { $('set-mic').innerHTML = '<option>Mic access denied</option>'; }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SETTINGS
+// ═══════════════════════════════════════════════════════════
+function loadSettings() {
+  $('set-gw-url').value = GW_BASE;
+  $('set-auto-send').value = AUTO_SEND ? '1' : '0';
+  $('set-silence').value = String(SILENCE_TIMEOUT);
+}
+
+function openSettings() { loadSettings(); $('settings-overlay').classList.add('show'); }
+function closeSettings() { $('settings-overlay').classList.remove('show'); }
+
+function saveSettings() {
+  GW_BASE = $('set-gw-url').value.replace(/\/+$/, '');
+  GW_WS = GW_BASE.replace(/^http/, 'ws');
+  AUTO_SEND = $('set-auto-send').value === '1';
+  SILENCE_TIMEOUT = parseInt($('set-silence').value);
+  MIC_DEVICE_ID = $('set-mic').value;
+
+  localStorage.setItem('vora_gw_url', GW_BASE);
+  localStorage.setItem('vora_auto_send', AUTO_SEND ? '1' : '0');
+  localStorage.setItem('vora_silence', String(SILENCE_TIMEOUT));
+  localStorage.setItem('vora_mic', MIC_DEVICE_ID);
+
+  closeSettings();
+  // Reconnect dashboard WS
+  if (dashWs) dashWs.close();
+  checkGateway();
+  connectDashboard();
+  addMsg('system', '✅ บันทึก Settings แล้ว');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MEMORY PANEL
+// ═══════════════════════════════════════════════════════════
+async function openMemory() {
+  $('memory-overlay').classList.add('show');
+  $('memory-panel').classList.add('show');
+  await loadMemory();
+}
+function closeMemory() {
+  $('memory-overlay').classList.remove('show');
+  $('memory-panel').classList.remove('show');
+}
+
+async function loadMemory() {
+  const list = $('memory-list');
+  list.innerHTML = '<div class="memory-empty" style="color:var(--text3)">กำลังโหลด...</div>';
+  try {
+    const r = await fetch(`${GW_BASE}/memory/objects`, {signal: AbortSignal.timeout(5000)});
+    const data = await r.json();
+
+    if (!data.objects || Object.keys(data.objects).length === 0) {
+      list.innerHTML = '<div class="memory-empty">🧠 ยังไม่มีข้อมูลที่จำได้<br/><span style="font-size:12px;color:var(--text3)">เมื่อหุ่นเจอสิ่งของ จะจำตำแหน่งไว้ให้อัตโนมัติ</span></div>';
+      return;
+    }
+
+    let html = '';
+    const emojis = {pen:'🖊️', pencil:'✏️', wallet:'👛', card:'💳', coil:'🔧'};
+    for (const [name, records] of Object.entries(data.objects)) {
+      const latest = records[0];
+      const emoji = emojis[name] || '📦';
+      const ageText = latest.age_hours < 1 ? 'เมื่อสักครู่' : `${latest.age_hours.toFixed(1)} ชม. ที่แล้ว`;
+      html += `
+        <div class="memory-item">
+          <h4>${emoji} ${name}</h4>
+          <p>📍 ${latest.location_description || latest.location || 'Unknown location'}</p>
+          <div class="mem-time">🕐 ${ageText} · พบ ${records.length} ครั้ง</div>
+        </div>`;
+    }
+    list.innerHTML = html;
+  } catch(e) {
+    list.innerHTML = '<div class="memory-empty">❌ ไม่สามารถโหลดข้อมูลได้<br/><span style="font-size:12px;color:var(--text3)">ตรวจสอบการเชื่อมต่อ Gateway</span></div>';
+  }
+}
+
+async function clearAllMemory() {
+  if (!confirm('ล้างความจำทั้งหมด?')) return;
+  try {
+    await fetch(`${GW_BASE}/memory`, {method: 'DELETE', signal: AbortSignal.timeout(5000)});
+    await loadMemory();
+    addSystemMessage('🗑️ ล้างความจำทั้งหมดแล้ว');
+  } catch(e) {
+    alert('ไม่สามารถล้างความจำได้: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ROBOT STATE INDICATOR
+// ═══════════════════════════════════════════════════════════
+const STATE_CONFIG = {
+  idle:       { icon: '●', text: 'Idle — พร้อมรับคำสั่ง',      color: 'var(--green)' },
+  listening:  { icon: '🎤', text: 'Listening — กำลังฟัง...',   color: 'var(--red)' },
+  processing: { icon: '⏳', text: 'Processing — กำลังประมวลผล...', color: 'var(--amber)' },
+  executing:  { icon: '🤖', text: 'Executing — กำลังเคลื่อนที่...', color: 'var(--blue)' },
+  searching:  { icon: '🔍', text: 'Searching — กำลังค้นหา...',  color: 'var(--accent2)' },
+};
+
+function setRobotState(state) {
+  robotState = state;
+  // Stop search polling when leaving searching state
+  if (state !== 'searching') stopSearchPolling();
+  const cfg = STATE_CONFIG[state] || STATE_CONFIG.idle;
+  const bar = $('state-bar');
+  bar.setAttribute('data-state', state);
+  $('state-icon').textContent = cfg.icon;
+  $('state-text').textContent = cfg.text;
+
+  // Logo thinking animation
+  const logoIcon = document.querySelector('.logo-icon');
+  if (logoIcon) {
+    const isThinking = ['processing', 'searching', 'executing'].includes(state);
+    logoIcon.classList.toggle('thinking', isThinking);
+  }
+
+  // Ambient glow on chat container
+  chatContainer.classList.toggle('ai-active', ['processing', 'searching'].includes(state));
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TTS MUTE TOGGLE
+// ═══════════════════════════════════════════════════════════
+function toggleTTSMute() {
+  ttsMuted = !ttsMuted;
+  localStorage.setItem('vora_tts_muted', ttsMuted ? '1' : '0');
+  applyTTSMute();
+  addMsg('system', ttsMuted ? '🔇 ปิดเสียงตอบกลับแล้ว' : '🔊 เปิดเสียงตอบกลับแล้ว');
+}
+
+function applyTTSMute() {
+  const btn = $('btn-tts-toggle');
+  btn.textContent = ttsMuted ? '🔇' : '🔊';
+  btn.classList.toggle('tts-muted', ttsMuted);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  EMERGENCY STOP
+// ═══════════════════════════════════════════════════════════
+function setupEstop() {
+  $('btn-estop').addEventListener('click', emergencyStop);
+  $('btn-estop').addEventListener('touchstart', e => { e.preventDefault(); emergencyStop(); });
+}
+
+async function emergencyStop() {
+  setRobotState('idle');
+  logConsole('err', '🚨 EMERGENCY STOP');
+  
+  // Cancel search if active
+  removeSearchCard();
+  clearBBox();
+
+  // Stop recording
+  if (isRecording) stopRecording();
+
+  // Send stop to both Gateway and Server in parallel
+  const promises = [];
+  if (gwAvailable) {
+    promises.push(
+      fetch(`${GW_BASE}/gw/text`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: 'หยุด', lang: 'th'}),
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => {}),
+      fetch(`${GW_BASE}/search/cancel`, {method: 'POST', signal: AbortSignal.timeout(2000)}).catch(() => {})
+    );
+  }
+  promises.push(
+    fetch(`${SERVER_BASE}/pipeline/command`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: 'หยุด', session_id: 'webapp', lang: 'th'}),
+      signal: AbortSignal.timeout(3000)
+    }).catch(() => {})
+  );
+  
+  await Promise.allSettled(promises);
+  addMsg('system', '🚨 <strong>EMERGENCY STOP</strong> — หุ่นยนต์หยุดทำงานแล้ว');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  D-PAD SETUP (press-and-hold feedback)
+// ═══════════════════════════════════════════════════════════
+function setupDpad() {
+  document.querySelectorAll('.dpad button[data-dpad-cmd]').forEach(btn => {
+    const cmd = btn.dataset.dpadCmd;
+    
+    // Click handler
+    btn.addEventListener('click', () => sendCmd(cmd));
+    
+    // Visual press feedback
+    const addPressed = () => btn.classList.add('pressed');
+    const removePressed = () => btn.classList.remove('pressed');
+    
+    btn.addEventListener('mousedown', addPressed);
+    btn.addEventListener('mouseup', removePressed);
+    btn.addEventListener('mouseleave', removePressed);
+    btn.addEventListener('touchstart', e => { e.preventDefault(); addPressed(); }, {passive: false});
+    btn.addEventListener('touchend', e => { removePressed(); sendCmd(cmd); });
+    btn.addEventListener('touchcancel', removePressed);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  BOUNDING BOX OVERLAY
+// ═══════════════════════════════════════════════════════════
+function showBBox(mode, label, location) {
+  const overlay = $('cam-mini-bbox');
+  if (!overlay) return;
+  
+  // Map VLM location to rough box position (% based)
+  let left = 20, top = 20, w = 60, h = 60;
+  const loc = (location || '').toLowerCase();
+  
+  // Horizontal position
+  if (loc.includes('left') || loc.includes('ซ้าย')) { left = 5; w = 40; }
+  else if (loc.includes('right') || loc.includes('ขวา')) { left = 55; w = 40; }
+  else { left = 20; w = 60; }
+  
+  // Vertical position
+  if (loc.includes('top') || loc.includes('upper') || loc.includes('บน') || loc.includes('far') || loc.includes('ไกล')) { top = 5; h = 40; }
+  else if (loc.includes('bottom') || loc.includes('lower') || loc.includes('ล่าง') || loc.includes('near') || loc.includes('ใกล้')) { top = 55; h = 40; }
+  else { top = 20; h = 60; }
+  
+  const bboxClass = mode === 'found' ? 'bbox' : 'bbox searching';
+  overlay.innerHTML = `
+    <div class="${bboxClass}" style="left:${left}%;top:${top}%;width:${w}%;height:${h}%">
+      <span class="bbox-label">${mode === 'found' ? '✅' : '🔍'} ${label}</span>
+    </div>`;
+  
+  // Auto-clear found box after 8s
+  if (mode === 'found') {
+    setTimeout(() => clearBBox(), 8000);
+  }
+}
+
+function clearBBox() {
+  const overlay = $('cam-mini-bbox');
+  if (overlay) overlay.innerHTML = '';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CONSOLE LOG PANEL
+// ═══════════════════════════════════════════════════════════
+function setupConsole() {
+  $('btn-console').addEventListener('click', toggleConsole);
+}
+
+function toggleConsole() {
+  consoleOpen = !consoleOpen;
+  $('console-panel').classList.toggle('show', consoleOpen);
+  if (consoleOpen) {
+    // Scroll to bottom
+    const out = $('console-output');
+    out.scrollTop = out.scrollHeight;
+  }
+}
+
+function clearConsole() {
+  $('console-output').innerHTML = '';
+  consoleMsgs = 0;
+  $('console-count').textContent = '0';
+}
+
+function logConsole(dir, text) {
+  // dir: 'in' (received), 'out' (sent), 'evt' (event), 'err' (error)
+  consoleMsgs++;
+  $('console-count').textContent = String(Math.min(consoleMsgs, 99));
+  
+  const time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const arrows = { in: '◄', out: '►', evt: '◆', err: '✕' };
+  
+  // Syntax highlight JSON-like content
+  const highlighted = text.replace(/"([^"]+)":/g, '"<span class="c-key">$1</span>":')
+    .replace(/:\s*"([^"]*)"/g, ': "<span class="c-str">$1</span>"')
+    .replace(/:\s*(\d+\.?\d*)/g, ': <span class="c-num">$1</span>');
+  
+  const line = document.createElement('div');
+  line.className = 'console-line';
+  line.innerHTML = `<span class="c-time">${time}</span><span class="c-dir ${dir}">${arrows[dir] || '?'}</span><span class="c-body">${highlighted}</span>`;
+  
+  const out = $('console-output');
+  out.appendChild(line);
+  
+  // Keep max 200 lines
+  while (out.children.length > 200) out.removeChild(out.firstChild);
+  
+  // Auto-scroll if near bottom
+  if (out.scrollHeight - out.scrollTop - out.clientHeight < 100) {
+    out.scrollTop = out.scrollHeight;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TELEMETRY PANEL
+// ═══════════════════════════════════════════════════════════
+function openTelemetry() {
+  $('telemetry-overlay').classList.add('show');
+  $('telemetry-panel').classList.add('show');
+  refreshTelemetry();
+}
+
+function closeTelemetry() {
+  $('telemetry-overlay').classList.remove('show');
+  $('telemetry-panel').classList.remove('show');
+}
+
+async function startPingLoop() {
+  async function doPing() {
+    // Server ping
+    try {
+      const t0 = performance.now();
+      const r = await fetch(`${SERVER_BASE}/health`, {signal: AbortSignal.timeout(5000), cache: 'no-store'});
+      if (r.ok) {
+        serverPingMs = Math.round(performance.now() - t0);
+      } else { serverPingMs = null; }
+    } catch(e) { serverPingMs = null; }
+    
+    // Gateway ping
+    if (gwAvailable) {
+      try {
+        const t0 = performance.now();
+        const r = await fetch(`${GW_BASE}/health`, {signal: AbortSignal.timeout(5000), cache: 'no-store'});
+        if (r.ok) {
+          gwPingMs = Math.round(performance.now() - t0);
+        } else { gwPingMs = null; }
+      } catch(e) { gwPingMs = null; }
+    }
+    
+    // Update header ping display
+    const pingDot = $('ping-dot');
+    const pingText = $('ping-text');
+    const ms = serverPingMs ?? gwPingMs;
+    if (ms !== null) {
+      pingText.textContent = `${ms} ms`;
+      if (ms < 100) { pingDot.style.background = 'var(--green)'; }
+      else if (ms < 300) { pingDot.style.background = 'var(--amber)'; }
+      else { pingDot.style.background = 'var(--red)'; }
+    } else {
+      pingText.textContent = '-- ms';
+      pingDot.style.background = 'var(--text3)';
+    }
+  }
+  
+  doPing();
+  setInterval(doPing, 10000);
+}
+
+async function startTelemetryLoop() {
+  // Fetch server health info once on start
+  try {
+    const r = await fetch(`${SERVER_BASE}/health`, {signal: AbortSignal.timeout(5000)});
+    if (r.ok) {
+      const data = await r.json();
+      $('telem-model').textContent = data.model || '--';
+      $('telem-gpu').textContent = data.gpu_enabled ? '✅ Enabled' : '❌ Off';
+      $('telem-gpu').className = 'telem-value ' + (data.gpu_enabled ? 'good' : 'warn');
+    }
+  } catch(e) {}
+}
+
+function refreshTelemetry() {
+  // Ping values
+  const fmtPing = (ms) => {
+    if (ms === null) return { text: '-- ms', cls: '' };
+    const cls = ms < 100 ? 'good' : ms < 300 ? 'warn' : 'bad';
+    return { text: `${ms} ms`, cls };
+  };
+  
+  const sp = fmtPing(serverPingMs);
+  const gp = fmtPing(gwPingMs);
+  $('telem-server-ping').textContent = sp.text;
+  $('telem-server-ping').className = `telem-value ${sp.cls}`;
+  $('telem-gw-ping').textContent = gp.text;
+  $('telem-gw-ping').className = `telem-value ${gp.cls}`;
+  
+  // Camera FPS
+  $('telem-fps').textContent = cameraFps > 0 ? `${cameraFps} fps` : '--';
+  $('telem-fps').className = 'telem-value ' + (cameraFps >= 5 ? 'good' : cameraFps > 0 ? 'warn' : '');
+  
+  // Battery (simulated — MyAGV doesn't expose battery via ROS easily)
+  // In real deployment, this would come from /battery_state topic
+  const batt = 78; // simulated
+  const volt = 11.4; // simulated
+  $('telem-batt').textContent = `${batt} %`;
+  $('telem-batt').className = 'telem-value ' + (batt > 50 ? 'good' : batt > 20 ? 'warn' : 'bad');
+  const battBar = $('telem-batt-bar');
+  battBar.style.width = `${batt}%`;
+  battBar.style.background = batt > 50 ? 'var(--green)' : batt > 20 ? 'var(--amber)' : 'var(--red)';
+  $('telem-volt').textContent = `${volt.toFixed(1)} V`;
+  
+  // Position (fetched from /map/state)
+  $('telem-pos-x').textContent = `${robotPos.x.toFixed(2)} m`;
+  $('telem-pos-y').textContent = `${robotPos.y.toFixed(2)} m`;
+  $('telem-pos-th').textContent = `${(robotPos.th * 180 / Math.PI).toFixed(1)}°`;
+  
+  // Frame size from last camera fetch
+  const camImg = $('cam-mini-img');
+  if (camImg && camImg.src) {
+    // Estimate from blob (we'll use a rough value)
+    $('telem-frame-size').textContent = '~30 KB';
+  }
+  
+  // Uptime
+  const uptimeSec = Math.round((Date.now() - startTime) / 1000);
+  const h = Math.floor(uptimeSec / 3600);
+  const m = Math.floor((uptimeSec % 3600) / 60);
+  const s = uptimeSec % 60;
+  $('telem-uptime').textContent = `${h}h ${m}m ${s}s`;
+  
+  // Render map canvases
+  renderMapCanvas('map-canvas');
+  if ($('map-expanded').classList.contains('show')) {
+    renderMapCanvas('map-canvas-big');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SLAM MAP RENDERING
+// ═══════════════════════════════════════════════════════════
+let mapImage = null;       // HTMLImageElement of SLAM map PNG
+let mapInfo = null;        // {width, height, resolution, origin}
+let mapObjects = [];       // [{name, location, ...}]
+let mapImageLoaded = false;
+
+// Load SLAM map image once
+(function loadMapImage() {
+  const img = new Image();
+  img.onload = () => { mapImage = img; mapImageLoaded = true;
+    $('map-label').textContent = `Map: ${img.width}×${img.height}`;
+  };
+  img.onerror = () => { $('map-label').textContent = 'Map not available'; };
+  img.src = '/map/image';
+})();
+
+// Fetch map state (robot pose + objects) — called every 500ms
+async function fetchMapState() {
+  try {
+    const r = await fetch('/map/state');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.robot) {
+      robotPos.x = d.robot.x;
+      robotPos.y = d.robot.y;
+      robotPos.th = d.robot.theta;
+    }
+    if (d.map && !mapInfo) {
+      mapInfo = d.map;
+    }
+    if (d.objects) {
+      mapObjects = d.objects;
+    }
+  } catch(e) {}
+}
+setInterval(fetchMapState, 500);
+
+// Convert world coords (meters) to canvas pixel coords
+function worldToCanvas(wx, wy, cw, ch) {
+  if (!mapInfo || !mapInfo.resolution) return { px: cw/2, py: ch/2 };
+  const res = mapInfo.resolution;
+  const ox = mapInfo.origin[0];
+  const oy = mapInfo.origin[1];
+  const mw = mapInfo.width;
+  const mh = mapInfo.height;
+  
+  // World → map pixel
+  const mpx = (wx - ox) / res;
+  const mpy = mh - (wy - oy) / res; // flip Y
+  
+  // Uniform scale to fit canvas (preserve aspect)
+  const scale = Math.min(cw / mw, ch / mh);
+  const offx = (cw - mw * scale) / 2;
+  const offy = (ch - mh * scale) / 2;
+  return { px: mpx * scale + offx, py: mpy * scale + offy };
+}
+
+function renderMapCanvas(canvasId) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cw = canvas.width;
+  const ch = canvas.height;
+  
+  // Clear
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, cw, ch);
+  
+  // Draw SLAM map image (uniform scale, centered)
+  if (mapImageLoaded && mapImage && mapInfo) {
+    const mw = mapInfo.width;
+    const mh = mapInfo.height;
+    const scale = Math.min(cw / mw, ch / mh);
+    const offx = (cw - mw * scale) / 2;
+    const offy = (ch - mh * scale) / 2;
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(mapImage, offx, offy, mw * scale, mh * scale);
+    ctx.globalAlpha = 1.0;
+  } else {
+    ctx.fillStyle = '#333';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Map loading...', cw/2, ch/2);
+    return;
+  }
+  
+  // Draw trail
+  if (trailPoints.length > 1) {
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(124, 92, 255, 0.5)';
+    ctx.lineWidth = canvasId === 'map-canvas-big' ? 2.5 : 1.5;
+    const p0 = trailPoints[0];
+    ctx.moveTo(p0.px, p0.py);
+    for (let i = 1; i < trailPoints.length; i++) {
+      ctx.lineTo(trailPoints[i].px, trailPoints[i].py);
+    }
+    ctx.stroke();
+  }
+  
+  // Draw object markers
+  const markerR = canvasId === 'map-canvas-big' ? 8 : 5;
+  const fontSize = canvasId === 'map-canvas-big' ? 11 : 7;
+  for (const obj of mapObjects) {
+    // Objects use robot position at time of detection as approx
+    const wp = worldToCanvas(obj.robot_x || 0, obj.robot_y || 0, cw, ch);
+    ctx.beginPath();
+    ctx.arc(wp.px, wp.py, markerR, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 200, 120, 0.8)';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Label
+    ctx.fillStyle = '#fff';
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(obj.name || '?', wp.px, wp.py - markerR - 2);
+  }
+  
+  // Draw robot position
+  const rp = worldToCanvas(robotPos.x, robotPos.y, cw, ch);
+  const dotR = canvasId === 'map-canvas-big' ? 8 : 5;
+  
+  // Store trail in canvas coords
+  trailPoints.push({ px: rp.px, py: rp.py });
+  if (trailPoints.length > 200) trailPoints.shift();
+  
+  // Heading arrow
+  const arrowLen = dotR * 3;
+  const ax = rp.px + Math.cos(-robotPos.th) * arrowLen; // negate for canvas Y
+  const ay = rp.py + Math.sin(-robotPos.th) * arrowLen;
+  ctx.beginPath();
+  ctx.moveTo(rp.px, rp.py);
+  ctx.lineTo(ax, ay);
+  ctx.strokeStyle = '#ff6b6b';
+  ctx.lineWidth = canvasId === 'map-canvas-big' ? 3 : 2;
+  ctx.stroke();
+  
+  // Robot dot
+  ctx.beginPath();
+  ctx.arc(rp.px, rp.py, dotR, 0, Math.PI * 2);
+  ctx.fillStyle = '#7c5cff';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  
+  // Glow
+  ctx.beginPath();
+  ctx.arc(rp.px, rp.py, dotR + 4, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(124, 92, 255, 0.3)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function toggleExpandedMap() {
+  const panel = $('map-expanded');
+  panel.classList.toggle('show');
+  if (panel.classList.contains('show')) {
+    renderMapCanvas('map-canvas-big');
+  }
+}
+
+// Update telemetry panel data every 3 seconds if open
+setInterval(() => {
+  if ($('telemetry-panel').classList.contains('show')) {
+    refreshTelemetry();
+  }
+}, 3000);
+
+// Render mini-map every 500ms regardless of panel state
+setInterval(() => {
+  renderMapCanvas('map-canvas');
+  if ($('map-expanded').classList.contains('show')) {
+    renderMapCanvas('map-canvas-big');
+  }
+}, 500);
+
+// ═══════════════════════════════════════════════════════════
+//  VOICE VISUALIZER (Audio Waveform)
+// ═══════════════════════════════════════════════════════════
+const voiceViz = $('voice-visualizer');
+const VBAR_COUNT = 32;
+
+// Create bars
+(function initVoiceViz() {
+  for (let i = 0; i < VBAR_COUNT; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'vbar';
+    bar.style.height = '4px';
+    voiceViz.appendChild(bar);
+  }
+})();
+
+let vizAnimFrame = null;
+let vizAnalyser = null;
+
+function startVoiceVisualizer(analyserNode) {
+  vizAnalyser = analyserNode;
+  voiceViz.classList.add('active');
+  voiceViz.classList.remove('speaking');
+  animateViz();
+}
+
+function startSpeakingVisualizer() {
+  // Simulated waveform during TTS playback
+  voiceViz.classList.add('active', 'speaking');
+  if (!vizAnimFrame) animateVizSimulated();
+}
+
+function stopVoiceVisualizer() {
+  voiceViz.classList.remove('active', 'speaking');
+  vizAnalyser = null;
+  if (vizAnimFrame) { cancelAnimationFrame(vizAnimFrame); vizAnimFrame = null; }
+  // Reset bars
+  voiceViz.querySelectorAll('.vbar').forEach(b => b.style.height = '4px');
+}
+
+function animateViz() {
+  if (!vizAnalyser) { vizAnimFrame = null; return; }
+  const data = new Uint8Array(vizAnalyser.frequencyBinCount);
+  vizAnalyser.getByteFrequencyData(data);
+  const bars = voiceViz.querySelectorAll('.vbar');
+  const step = Math.floor(data.length / VBAR_COUNT);
+  bars.forEach((bar, i) => {
+    const val = data[i * step] || 0;
+    const h = Math.max(4, (val / 255) * 80);
+    bar.style.height = h + 'px';
+  });
+  vizAnimFrame = requestAnimationFrame(animateViz);
+}
+
+function animateVizSimulated() {
+  if (!voiceViz.classList.contains('active')) { vizAnimFrame = null; return; }
+  const bars = voiceViz.querySelectorAll('.vbar');
+  const t = Date.now() / 1000;
+  bars.forEach((bar, i) => {
+    const wave = Math.sin(t * 4 + i * 0.4) * 0.5 + 0.5;
+    const h = Math.max(4, wave * 50 + Math.random() * 15);
+    bar.style.height = h + 'px';
+  });
+  vizAnimFrame = requestAnimationFrame(animateVizSimulated);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CHAIN-OF-THOUGHT UI
+// ═══════════════════════════════════════════════════════════
+let activeCotCard = null;
+
+function showChainOfThought(target) {
+  removeChainOfThought();
+  ensureChatStarted();
+  const el = document.createElement('div');
+  el.className = 'cot-card';
+  el.id = 'active-cot';
+  el.innerHTML = `
+    <div class="cot-header" onclick="this.parentElement.classList.toggle('collapsed')">
+      <span class="cot-title">🧠 AI Reasoning Chain</span>
+      <span class="cot-toggle">▼</span>
+    </div>
+    <div class="cot-steps" id="cot-steps"></div>`;
+  chatContainer.appendChild(el);
+  activeCotCard = el;
+  scrollChat();
+  return el;
+}
+
+function addCotStep(icon, text, status) {
+  // status: 'active' | 'done' | 'pending'
+  const steps = $('cot-steps');
+  if (!steps) return;
+  
+  // Mark previous active step as done
+  steps.querySelectorAll('.cot-step.active').forEach(s => {
+    s.classList.remove('active');
+    s.classList.add('done');
+    const spinner = s.querySelector('.cot-spinner');
+    if (spinner) spinner.remove();
+    const iconEl = s.querySelector('.cot-icon');
+    if (iconEl && !iconEl.dataset.locked) iconEl.textContent = '✓';
+  });
+
+  const step = document.createElement('div');
+  step.className = `cot-step ${status || 'active'}`;
+  const spinnerHtml = status === 'active' ? '<span class="cot-spinner"></span>' : '';
+  step.innerHTML = `<span class="cot-icon" ${icon === '🔍' || icon === '🎯' ? 'data-locked="1"' : ''}>${icon}</span><span class="cot-text">${spinnerHtml}${text}</span>`;
+  steps.appendChild(step);
+  scrollChat();
+}
+
+function finishChainOfThought() {
+  const steps = $('cot-steps');
+  if (!steps) return;
+  steps.querySelectorAll('.cot-step.active').forEach(s => {
+    s.classList.remove('active');
+    s.classList.add('done');
+    const spinner = s.querySelector('.cot-spinner');
+    if (spinner) spinner.remove();
+    const iconEl = s.querySelector('.cot-icon');
+    if (iconEl && !iconEl.dataset.locked) iconEl.textContent = '✓';
+  });
+}
+
+function removeChainOfThought() {
+  const el = $('active-cot');
+  if (el) el.remove();
+  activeCotCard = null;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TYPEWRITER EFFECT
+// ═══════════════════════════════════════════════════════════
+function addMsgTypewriter(role, html, speed) {
+  ensureChatStarted();
+  const time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
+  const el = document.createElement('div');
+  el.className = `msg-group ${role}`;
+  const avatar = role === 'vora' ? '🤖' : '👤';
+  el.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div class="msg-content">
+      <div class="msg-bubble typewriter"><span class="tw-text"></span><span class="tw-cursor"></span></div>
+      <div class="msg-time">${time}</div>
+    </div>`;
+  chatContainer.appendChild(el);
+  scrollChat();
+
+  const textEl = el.querySelector('.tw-text');
+  const cursorEl = el.querySelector('.tw-cursor');
+  const chars = html.split('');
+  let i = 0;
+  const baseSpeed = speed || 25; // ms per char
+  let inTag = false;
+  let tagBuffer = '';
+
+  function typeNext() {
+    if (i >= chars.length) {
+      if (cursorEl) cursorEl.remove();
+      return;
+    }
+    const ch = chars[i];
+    // Handle HTML tags — insert them instantly
+    if (ch === '<') { inTag = true; tagBuffer = '<'; i++; typeNext(); return; }
+    if (inTag) {
+      tagBuffer += ch;
+      if (ch === '>') {
+        inTag = false;
+        textEl.innerHTML += tagBuffer;
+        tagBuffer = '';
+      }
+      i++;
+      typeNext();
+      return;
+    }
+    textEl.innerHTML += ch;
+    i++;
+    scrollChat();
+    setTimeout(typeNext, baseSpeed + Math.random() * 15);
+  }
+  typeNext();
+  return el;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  HERO-TO-CHAT TRANSITION
+// ═══════════════════════════════════════════════════════════
+const _origEnsureChatStarted = ensureChatStarted;
+ensureChatStarted = function() {
+  if (!chatStarted) {
+    chatStarted = true;
+    const ws = welcomeScreen;
+    ws.classList.add('shrinking');
+    ws.addEventListener('animationend', () => {
+      ws.style.display = 'none';
+    }, {once: true});
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  FLOATING D-PAD TOGGLE (smooth show/hide)
+// ═══════════════════════════════════════════════════════════
+(function initFloatingDpad() {
+  const overlay = $('dpad-overlay');
+  const btn = $('btn-dpad');
+  let isShowing = false;
+
+  btn.onclick = () => {
+    if (isShowing) {
+      overlay.classList.add('hiding');
+      overlay.addEventListener('animationend', () => {
+        overlay.classList.remove('show', 'hiding');
+      }, {once: true});
+      isShowing = false;
+    } else {
+      overlay.classList.remove('hiding');
+      overlay.classList.add('show');
+      isShowing = true;
+    }
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════
+//  DRAGGABLE CAMERA (YouTube Floating Style)
+// ═══════════════════════════════════════════════════════════
+(function initDraggableCamera() {
+  const cam = document.getElementById('camera-mini');
+  if (!cam) return;
+  
+  let isDragging = false, wasDragged = false;
+  let startX, startY, camStartX, camStartY;
+  
+  function getPosition() {
+    const rect = cam.getBoundingClientRect();
+    return { x: rect.left, y: rect.top };
+  }
+  
+  function clamp(x, y) {
+    const pRect = cam.parentElement.getBoundingClientRect();
+    const cw = cam.offsetWidth, ch = cam.offsetHeight;
+    x = Math.max(pRect.left, Math.min(x, pRect.right - cw));
+    y = Math.max(pRect.top, Math.min(y, pRect.bottom - ch));
+    return { x, y };
+  }
+  
+  function onStart(clientX, clientY) {
+    const pos = getPosition();
+    isDragging = true;
+    wasDragged = false;
+    startX = clientX;
+    startY = clientY;
+    camStartX = pos.x;
+    camStartY = pos.y;
+    cam.classList.add('dragging');
+    // Switch to fixed position for dragging
+    cam.style.position = 'fixed';
+    cam.style.left = pos.x + 'px';
+    cam.style.top = pos.y + 'px';
+    cam.style.right = 'auto';
+  }
+  
+  function onMove(clientX, clientY) {
+    if (!isDragging) return;
+    const dx = clientX - startX;
+    const dy = clientY - startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDragged = true;
+    const { x, y } = clamp(camStartX + dx, camStartY + dy);
+    cam.style.left = x + 'px';
+    cam.style.top = y + 'px';
+  }
+  
+  function onEnd() {
+    if (!isDragging) return;
+    isDragging = false;
+    cam.classList.remove('dragging');
+  }
+  
+  // Mouse events
+  cam.addEventListener('mousedown', e => { e.preventDefault(); onStart(e.clientX, e.clientY); });
+  document.addEventListener('mousemove', e => onMove(e.clientX, e.clientY));
+  document.addEventListener('mouseup', () => onEnd());
+  
+  // Touch events
+  cam.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) {
+      e.preventDefault();
+      onStart(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, {passive: false});
+  document.addEventListener('touchmove', e => {
+    if (isDragging && e.touches.length === 1) {
+      onMove(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, {passive: false});
+  document.addEventListener('touchend', () => onEnd());
+  
+  // Override click to prevent opening fullscreen after drag
+  cam.addEventListener('click', e => {
+    if (wasDragged) {
+      e.stopPropagation();
+      e.preventDefault();
+      wasDragged = false;
+    } else {
+      openCameraFull();
+    }
+  });
+  
+  // Remove old click handler
+  cam.onclick = null;
+})();
+
+// ═══════════════════════════════════════════════════════════
+//  SERVER-ONLY STT FALLBACK (when Gateway unavailable)
+// ═══════════════════════════════════════════════════════════
+async function startRecordingServerDirect() {
+  try {
+    const constraints = {
+      audio: {
+        deviceId: MIC_DEVICE_ID ? {exact: MIC_DEVICE_ID} : undefined,
+        channelCount: 1, echoCancellation: true, noiseSuppression: true,
+        sampleRate: {ideal: 16000},
+      }
+    };
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    sampleRate = audioCtx.sampleRate;
+
+    // Connect directly to Server STT WebSocket
+    const wsUrl = `${SERVER_WS}/ws/stt`;
+    console.log('🎤 Server-direct STT:', wsUrl);
+    audioWs = new WebSocket(wsUrl);
+
+    audioWs.onopen = () => {
+      audioWs.send(JSON.stringify({rate: sampleRate, lang: 'th'}));
+
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = e => {
+        if (audioWs && audioWs.readyState === WebSocket.OPEN) {
+          const pcm = e.inputBuffer.getChannelData(0);
+          const int16 = new Int16Array(pcm.length);
+          for (let i = 0; i < pcm.length; i++) int16[i] = Math.max(-32768, Math.min(32767, pcm[i] * 32767));
+          audioWs.send(int16.buffer);
+        }
+      };
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      // Voice visualizer
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      source.connect(analyser);
+      startVoiceVisualizer(analyser);
+
+      isRecording = true;
+      btnMic.classList.add('recording');
+      transcriptBar.textContent = '🎤 Listening (Server-direct)...';
+      transcriptBar.classList.add('active');
+    };
+
+    audioWs.onmessage = e => {
+      try {
+        const data = JSON.parse(e.data);
+        const type = (data.type || '').toLowerCase();
+        if (type === 'partial') {
+          transcriptBar.innerHTML = `<span style=\"color:var(--accent2)\">🎤 ${data.text || '...'}</span>`;
+        } else if (['final','result','transcript_final'].includes(type)) {
+          const text = data.text || '';
+          if (text) {
+            transcriptBar.textContent = `✅ "${text}"`;
+            addMsg('user', text);
+            // In Server-direct mode, send the command via text
+            if (AUTO_SEND) sendCmd(text);
+            setTimeout(() => { transcriptBar.textContent = isRecording ? '🎤 Listening (Server-direct)...' : ''; }, 1500);
+          }
+        }
+      } catch(err) {}
+    };
+
+    audioWs.onclose = () => { if (isRecording) stopRecording(); };
+    audioWs.onerror = e => {
+      console.error('Server STT WS error:', e);
+      addMsg('system', '⚠️ ไม่สามารถเชื่อมต่อ STT กับ Server');
+      stopRecording();
+    };
+  } catch(e) {
+    console.error('Mic error:', e);
+    addMsg('system', '❌ ไม่สามารถเข้าถึงไมค์ — ตรวจสอบ Permissions');
+  }
+}
+
+// Override startRecording to choose Gateway vs Server-direct
+const _origStartRecording = startRecording;
+startRecording = async function() {
+  if (gwAvailable) {
+    return _origStartRecording();
+  } else {
+    console.log('⚠️ Gateway unavailable — using Server-direct STT');
+    return startRecordingServerDirect();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  PERIODIC HEALTH
+// ═══════════════════════════════════════════════════════════
+setInterval(() => { checkServer(); checkGateway(); }, 15000);
+
+// ═══════════════════════════════════════════════════════════
+//  START
+// ═══════════════════════════════════════════════════════════
+init();
+</script>
+</body>
+</html>

@@ -258,9 +258,9 @@ async def vlm_describe_bytes(
 
     if not prompt:
         prompt = (
-            "ภาพนี้มีสิ่งของอะไรบ้าง แต่ละอย่างอยู่ตำแหน่งไหน (ซ้าย/ขวา/กลาง/ใกล้/ไกล)?"
-            if lang == "th"
-            else "What objects are in this image and where is each one positioned?"
+            "Describe what you see. List every object with its color and position (left/center/right)."
+            if lang == "en"
+            else "Describe what you see. List every object with its color and position (left/center/right)."
         )
 
     logger.info(f"📸 /vlm/describe-bytes: frame={len(frame)} bytes, prompt={prompt[:60]}")

@@ -41,6 +41,9 @@ class ObjectLocation:
     timestamp: float = field(default_factory=time.time)
     confidence: float = 0.8
     image_url: Optional[str] = None
+    robot_x: float = 0.0         # Robot X position (meters) when object was found
+    robot_y: float = 0.0         # Robot Y position (meters) when object was found
+    robot_theta: float = 0.0     # Robot heading (radians) when object was found
     
     def age_hours(self) -> float:
         """How many hours ago this was recorded"""
@@ -133,6 +136,9 @@ class ObjectMemory:
         location_description: str = "",
         confidence: float = 0.8,
         image_url: Optional[str] = None,
+        robot_x: float = 0.0,
+        robot_y: float = 0.0,
+        robot_theta: float = 0.0,
     ):
         """
         Remember where an object was found.
@@ -144,6 +150,9 @@ class ObjectMemory:
             location_description: Human description
             confidence: How confident we are (0-1)
             image_url: URL of captured image
+            robot_x: Robot X map position (meters) at detection time
+            robot_y: Robot Y map position (meters) at detection time
+            robot_theta: Robot heading (radians) at detection time
         """
         loc = ObjectLocation(
             object_name=object_name,
@@ -152,6 +161,9 @@ class ObjectMemory:
             location_description=location_description,
             confidence=confidence,
             image_url=image_url,
+            robot_x=robot_x,
+            robot_y=robot_y,
+            robot_theta=robot_theta,
         )
         
         if object_name not in self._memory:

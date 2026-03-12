@@ -19,6 +19,7 @@ from .api.pipeline_router import router as pipeline_router
 from .api.server_router import router as server_router  # Server APIs (TTS gTTS, Queue, State)   
 from .api.vlm_router import router as vlm_router        # VLM Vision endpoints (Qwen3-VL)
 from .api.camera_router import router as camera_router  # Camera proxy from Gateway
+from .api.map_router import router as map_router        # SLAM map + robot position
 
 # ตั้งค่า Logger เพื่อดูสถานะการโหลดโมเดลใน A6000
 logging.basicConfig(level=logging.INFO)
@@ -150,6 +151,7 @@ app.include_router(pipeline_router)  # /pipeline/* endpoints
 app.include_router(server_router)    # /api/server/* endpoints (TTS gTTS, Queue, State)
 app.include_router(vlm_router)       # /vlm/* endpoints (Qwen3-VL image understanding)
 app.include_router(camera_router)    # /camera/* endpoints (Camera proxy from Gateway)
+app.include_router(map_router)       # /map/* endpoints (SLAM map + robot pose + objects)
 
 # ลงทะเบียน WebSocket STT หลัง HTTP routes
 register_ws(app)

@@ -175,12 +175,13 @@ fi
 # ============================================================
 print_header "🚀 Starting Services"
 
-print_info "This will open 5 terminals:"
+print_info "This will open 6 terminals:"
 echo "  0. MyAGV Hardware Driver (motor control)"
-echo "  1. ROSBridge WebSocket (port 9090)"
-echo "  2. Camera Publisher (OpenCV direct → /camera/compressed)"
-echo "  3. VORA Command Executor (ROS2 node)"
-echo "  4. Audio Stream Client (to Gateway)"
+echo "  1. YDLidar G2 (LiDAR → /scan for obstacle avoidance)"
+echo "  2. ROSBridge WebSocket (port 9090)"
+echo "  3. Camera Publisher (OpenCV direct → /camera/compressed)"
+echo "  4. VORA Command Executor (ROS2 node)"
+echo "  5. Audio Stream Client (to Gateway)"
 echo ""
 read -p "Press Enter to continue..."
 
@@ -202,7 +203,23 @@ gnome-terminal --title="VORA: MyAGV Hardware" -- bash -c "
 " &
 sleep 3
 
-# Terminal 1: ROSBridge
+# Terminal 1: YDLidar G2 (LiDAR for real-time obstacle detection)
+print_info "Starting YDLidar in new terminal..."
+gnome-terminal --title="VORA: LiDAR" -- bash -c "
+    echo '══════════════════════════════════════════════════════════';
+    echo '📡 Starting YDLidar G2 (Real-time Obstacle Detection)';
+    echo '══════════════════════════════════════════════════════════';
+    echo 'Publishes: /scan (sensor_msgs/LaserScan)';
+    echo 'Range: 0.1m–12m | 360° | ~5000 points/scan';
+    echo 'Used by: Gateway obstacle_avoidance.py';
+    echo '══════════════════════════════════════════════════════════';
+    source /opt/ros/galactic/setup.bash;
+    ros2 launch ydlidar_ros2_driver ydlidar_launch.py;
+    exec bash
+" &
+sleep 3
+
+# Terminal 2: ROSBridge
 print_info "Starting ROSBridge in new terminal..."
 gnome-terminal --title="VORA: ROSBridge" -- bash -c "
     echo '══════════════════════════════════════════════════════════';
@@ -214,7 +231,7 @@ gnome-terminal --title="VORA: ROSBridge" -- bash -c "
 " &
 sleep 2
 
-# Terminal 2: Camera Publisher (OpenCV direct — replaces usb_cam which segfaults on Jetson)
+# Terminal 3: Camera Publisher (OpenCV direct — replaces usb_cam which segfaults on Jetson)
 print_info "Starting Camera Publisher in new terminal..."
 gnome-terminal --title="VORA: Camera" -- bash -c "
     echo '══════════════════════════════════════════════════════════';
@@ -234,7 +251,7 @@ gnome-terminal --title="VORA: Camera" -- bash -c "
 " &
 sleep 3
 
-# Terminal 3: Command Executor
+# Terminal 4: Command Executor
 print_info "Starting Command Executor in new terminal..."
 gnome-terminal --title="VORA: Command Executor" -- bash -c "
     echo '══════════════════════════════════════════════════════════';
@@ -247,7 +264,7 @@ gnome-terminal --title="VORA: Command Executor" -- bash -c "
 " &
 sleep 2
 
-# Terminal 4: Audio Client
+# Terminal 5: Audio Client
 print_info "Starting Audio Client in new terminal..."
 GATEWAY_WS="ws://${GATEWAY_IP}:9001/gw/audio"
 gnome-terminal --title="VORA: Audio Stream" -- bash -c "
@@ -275,6 +292,7 @@ print_header "✅ All Services Started"
 
 echo ""
 print_success "ROSBridge:         ws://192.168.0.111:9090"
+print_success "LiDAR:             /scan (YDLidar G2, 360°, 0.1-12m)"
 print_success "Camera:            /camera/compressed (JPEG ~30-80KB, 15fps)"
 print_success "Command Executor:  Listening on /vora/command"
 print_success "Audio Stream:      $GATEWAY_WS"
@@ -284,6 +302,7 @@ print_info "Press Ctrl+C in terminals to stop services"
 print_info "Gateway should subscribe to /camera/compressed (sensor_msgs/CompressedImage)"
 echo ""
 print_warning "To stop all services:"
+echo "  pkill -f ydlidar"
 echo "  pkill -f ros_camera_pub"
 echo "  pkill -f rosbridge"
 echo "  pkill -f command_executor"

@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 #   - Calibration: 0.85 (ชดเชย inertia ของ Mecanum wheel)
 LINEAR_SPEED = 0.15  # m/s (ค่า default ที่ปลอดภัยสำหรับ MyAGV 2023)
 ANGULAR_SPEED = 0.50  # rad/s (ค่า default ตาม spec ของ Elephant Robotics)
-ROTATION_CALIBRATION = 0.87   # จูนจริง: 1.0 เกิน 30°, 0.90 เกินอีกนิด → 0.87
+ROTATION_CALIBRATION = 0.95   # Increased from 0.87 — was undershooting 10-20°
 
 DIST_PAT = r"(\d+(?:\.\d+)?)\s*(?:กิโล(?:เมตร)?|km|เมตร|ม\.|ม|เซนติ(?:เมตร)?|cm|ซม|มิลลิ(?:เมตร)?|mm|มม)"
 TIME_PAT = r"(\d+(?:\.\d+)?)\s*(?:วินาที|วิ|นาที|sec|s)"
@@ -300,10 +300,23 @@ def _clean_search_target(target: str) -> str:
         r"ข้างๆ",
         r"ใกล้ๆ",
     ]
+    # Polite words that commonly appear between the object name and description
+    _LEADING_POLITE = re.compile(
+        r'^(?:หน่อย|ครับผม|ครับ|ค่ะ|คะ|นะครับ|นะคะ|นะ|จ้า|จ๊ะ|เลย|สิ|\s)+',
+        re.IGNORECASE,
+    )
     for pat in _THAI_NOSPACE_CUTOFFS:
         m = re.search(pat, target)
         if m and m.start() > 0:  # must keep at least 1 char before
-            target = target[:m.start()].strip()
+            before = target[:m.start()].strip()
+            after = target[m.end():]
+            # Strip polite words from the beginning of remaining text
+            after_clean = _LEADING_POLITE.sub('', after).strip()
+            if after_clean and len(after_clean) > 2:
+                # Meaningful description follows (brand name, color, etc.) — keep it
+                target = f"{before} {after_clean}"
+            else:
+                target = before
             break
     
     # Step 1: Cut at noise boundary patterns (space-prefixed)
@@ -320,11 +333,11 @@ def _clean_search_target(target: str) -> str:
             break
         target = new
     
-    # Step 3: If result is too long (>30 chars), probably contains noise
-    # Try to extract just the first meaningful word/phrase
-    if len(target) > 30:
-        # Take first 1-2 Thai words (up to first space or connector)
-        short = re.match(r"^[\u0E00-\u0E7F\w]+(?:\s[\u0E00-\u0E7F\w]+)?", target)
+    # Step 3: If result is too long (>80 chars), probably contains noise
+    # Try to extract just the first meaningful words
+    if len(target) > 80:
+        # Take first few words (object + description/brand)
+        short = re.match(r"^[\u0E00-\u0E7F\w]+(?:[\s][\u0E00-\u0E7F\w]+){0,5}", target)
         if short:
             target = short.group(0)
     

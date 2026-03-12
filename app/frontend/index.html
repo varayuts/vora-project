@@ -100,17 +100,148 @@ body::after{
 .btn-icon:hover{background:rgba(124,92,255,.1);border-color:rgba(124,92,255,.2);color:var(--text)}
 
 /* ═══════════════ MAIN CONTAINER ═══════════════ */
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;z-index:1}
+.main{
+  flex:1;display:grid;overflow:hidden;position:relative;z-index:1;
+  grid-template-columns:280px 1fr 380px;
+  grid-template-rows:1fr auto;
+  gap:0;
+}
 
-/* ═══════════════ CHAT AREA ═══════════════ */
+/* ═══════════════ LEFT PANEL: MAP + TELEMETRY ═══════════════ */
+.panel-left{
+  grid-row:1/3;display:flex;flex-direction:column;
+  background:rgba(18,18,30,.6);border-right:1px solid var(--border);
+  overflow-y:auto;overflow-x:hidden;
+}
+.panel-left::-webkit-scrollbar{width:3px}
+.panel-left::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+
+.map-section{
+  padding:12px;flex-shrink:0;
+}
+.map-section h3{
+  font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);
+  margin-bottom:8px;display:flex;align-items:center;gap:6px;font-weight:600;
+}
+.map-live{
+  width:100%;aspect-ratio:1;background:var(--bg);border-radius:12px;border:1px solid var(--border);
+  position:relative;overflow:hidden;cursor:pointer;
+}
+.map-live canvas{position:absolute;inset:0;width:100%;height:100%}
+.map-live .map-label{
+  position:absolute;bottom:4px;left:6px;font-size:8px;color:var(--text3);
+  font-family:var(--mono);pointer-events:none;
+}
+.map-live .map-pos-label{
+  position:absolute;top:4px;right:6px;font-size:9px;color:var(--accent2);
+  font-family:var(--mono);pointer-events:none;background:rgba(0,0,0,.5);
+  padding:2px 6px;border-radius:4px;
+}
+
+/* Compact Telemetry Cards */
+.telem-section{padding:0 12px 12px;display:flex;flex-direction:column;gap:8px}
+.telem-compact{
+  padding:10px 12px;border-radius:10px;background:var(--bg3);border:1px solid var(--border);
+}
+.telem-compact h4{
+  font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;
+  margin-bottom:6px;display:flex;align-items:center;gap:5px;
+}
+.telem-compact .telem-row{
+  display:flex;align-items:center;justify-content:space-between;padding:2px 0;font-size:12px;
+}
+.telem-compact .telem-label{color:var(--text2)}
+.telem-compact .telem-value{font-family:var(--mono);font-weight:600;color:var(--text);font-size:11px}
+.telem-compact .telem-value.good{color:var(--green)}
+.telem-compact .telem-value.warn{color:var(--amber)}
+.telem-compact .telem-value.bad{color:var(--red)}
+.telem-bar{
+  height:4px;background:var(--bg);border-radius:2px;margin-top:4px;overflow:hidden;
+}
+.telem-bar-fill{height:100%;border-radius:2px;transition:width .5s,background .5s}
+
+/* LiDAR Status Indicator */
+.lidar-ring{
+  width:100%;aspect-ratio:1;max-width:200px;margin:4px auto;position:relative;
+}
+.lidar-ring canvas{width:100%;height:100%}
+
+/* ═══════════════ CENTER PANEL: CAMERA + CONTROLS ═══════════════ */
+.panel-center{
+  display:flex;flex-direction:column;overflow:hidden;
+  border-right:1px solid var(--border);
+}
+.camera-main{
+  flex:1;position:relative;background:#0a0a0f;
+  display:flex;align-items:center;justify-content:center;
+  min-height:0;
+}
+.camera-main img{
+  max-width:100%;max-height:100%;object-fit:contain;display:block;cursor:pointer;
+}
+.camera-main .cam-label{
+  position:absolute;top:8px;left:8px;padding:3px 10px;border-radius:6px;
+  background:rgba(0,0,0,.7);font-size:10px;font-weight:600;color:var(--green);
+  display:flex;align-items:center;gap:5px;z-index:2;
+}
+.camera-main .cam-label::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--red)}
+.camera-main.live .cam-label::before{background:var(--green);box-shadow:0 0 6px rgba(16,185,129,.6)}
+.camera-main .cam-actions-bar{
+  position:absolute;bottom:0;left:0;right:0;padding:8px;
+  background:linear-gradient(transparent,rgba(0,0,0,.7));
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  opacity:0;transition:opacity .3s;
+}
+.camera-main:hover .cam-actions-bar{opacity:1}
+.camera-main .cam-actions-bar button{
+  padding:5px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.2);
+  background:rgba(0,0,0,.5);color:#fff;font-size:11px;cursor:pointer;
+  transition:var(--transition);font-family:var(--font);
+}
+.camera-main .cam-actions-bar button:hover{background:rgba(124,92,255,.3);border-color:var(--accent)}
+.camera-no-feed{
+  color:var(--text3);font-size:13px;text-align:center;
+}
+.camera-no-feed svg{display:block;margin:0 auto 8px;opacity:.3}
+
+/* Robot control strip below camera */
+.control-strip{
+  flex-shrink:0;padding:10px 12px;
+  background:rgba(18,18,30,.6);border-top:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;
+}
+.ctrl-btn{
+  padding:6px 14px;border-radius:10px;border:1px solid var(--border2);
+  background:rgba(22,22,42,.5);color:var(--text2);font-size:12px;font-weight:500;
+  cursor:pointer;transition:var(--transition);font-family:var(--font);
+  display:flex;align-items:center;gap:5px;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+.ctrl-btn:hover{background:rgba(124,92,255,.12);border-color:var(--accent);color:var(--accent2)}
+.ctrl-btn:active{transform:scale(.95)}
+.ctrl-btn.danger{border-color:rgba(239,68,68,.3);color:var(--red)}
+.ctrl-btn.danger:hover{background:rgba(239,68,68,.12);border-color:var(--red)}
+
+/* ═══════════════ RIGHT PANEL: CHAT ═══════════════ */
+.panel-right{
+  grid-row:1/3;display:flex;flex-direction:column;overflow:hidden;
+  background:rgba(18,18,30,.4);
+}
+
+/* ═══════════════ CHAT AREA (inside panel-right) ═══════════════ */
 .chat-area{
   flex:1;overflow-y:auto;overflow-x:hidden;scroll-behavior:smooth;
-  padding:20px 0;
+  padding:12px 0;
 }
-.chat-area::-webkit-scrollbar{width:4px}
-.chat-area::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:4px}
+.chat-area::-webkit-scrollbar{width:3px}
+.chat-area::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
 
-.chat-container{max-width:760px;margin:0 auto;padding:0 20px}
+.chat-container{padding:0 14px}
+.chat-header{
+  padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
+  display:flex;align-items:center;gap:8px;
+}
+.chat-header h3{font-size:13px;font-weight:600;color:var(--text2);display:flex;align-items:center;gap:6px}
 
 /* Welcome Screen */
 .welcome{
@@ -180,22 +311,26 @@ body::after{
 
 /* Search Progress Card */
 .search-card{
-  margin:12px 0;padding:16px;border-radius:var(--radius);
-  background:linear-gradient(135deg,rgba(124,92,255,.08),rgba(99,102,241,.05));
-  border:1px solid rgba(124,92,255,.2);animation:fadeIn .3s;
+  margin:12px 0;padding:16px 18px;border-radius:var(--radius);
+  background:linear-gradient(135deg,rgba(124,92,255,.1),rgba(59,130,246,.06));
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  border:1px solid rgba(124,92,255,.22);animation:fadeIn .3s;
+  box-shadow:0 4px 24px rgba(124,92,255,.08);
 }
 .search-card .search-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .search-card .search-icon{font-size:20px;animation:spin 2s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.search-card .search-title{font-size:14px;font-weight:600;color:var(--accent2)}
-.search-card .search-status{font-size:13px;color:var(--text2);line-height:1.5}
+.search-card .search-title{font-size:14px;font-weight:600;color:var(--accent2);text-shadow:0 0 16px rgba(167,139,250,.3)}
+.search-card .search-status{font-size:12px;color:var(--text2);line-height:1.5;font-family:var(--mono)}
 .search-card .search-progress{
-  margin-top:10px;height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;
+  margin-top:10px;height:4px;background:rgba(124,92,255,.1);border-radius:2px;overflow:hidden;
 }
 .search-card .search-progress-bar{
-  height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));
-  width:0%;transition:width .5s;border-radius:2px;
+  height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2),var(--green));
+  background-size:200% 100%;animation:progressShimmer 2s linear infinite;
+  width:0%;transition:width .6s cubic-bezier(.4,0,.2,1);border-radius:2px;
 }
+@keyframes progressShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
 .search-card .search-cancel{
   margin-top:10px;padding:6px 14px;border-radius:10px;font-size:12px;
   background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);color:var(--red);
@@ -205,16 +340,23 @@ body::after{
 
 /* Found Card */
 .found-card{
-  margin:12px 0;padding:16px;border-radius:var(--radius);overflow:hidden;
-  background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(16,185,129,.03));
+  margin:12px 0;padding:18px;border-radius:var(--radius);overflow:hidden;
+  background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(16,185,129,.04));
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
   border:1px solid rgba(16,185,129,.3);animation:fadeIn .3s;
+  box-shadow:0 4px 24px rgba(16,185,129,.1);
 }
-.found-card .found-header{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--green)}
+.found-card .found-header{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--green);text-shadow:0 0 16px rgba(16,185,129,.3)}
 .found-card .found-img{
-  width:100%;max-height:200px;object-fit:cover;border-radius:10px;margin-top:10px;
-  border:1px solid var(--border);
+  width:100%;max-height:220px;object-fit:cover;border-radius:12px;margin-top:12px;
+  border:1px solid rgba(16,185,129,.2);box-shadow:0 4px 16px rgba(0,0,0,.3);
 }
-.found-card .found-text{font-size:13px;color:var(--text2);margin-top:8px;line-height:1.5}
+.found-card .found-text{font-size:13px;color:var(--text2);margin-top:10px;line-height:1.6}
+.found-card .found-coords{
+  font-size:11px;color:var(--accent2);margin-top:8px;padding:6px 10px;
+  background:rgba(124,92,255,.08);border-radius:8px;
+  font-family:var(--mono);border-left:2px solid var(--accent);
+}
 
 /* Obstacle Card */
 .obstacle-card{
@@ -223,15 +365,9 @@ body::after{
   font-size:13px;color:var(--amber);
 }
 
-/* ═══════════════ CAMERA MINI VIEW ═══════════════ */
+/* ═══════════════ CAMERA MINI VIEW (LEGACY — hidden in dashboard mode) ═══════════════ */
 .camera-mini{
-  position:absolute;top:12px;right:12px;z-index:50;
-  width:180px;border-radius:var(--radius);overflow:hidden;
-  background:rgba(10,10,18,.75);backdrop-filter:blur(12px) saturate(1.3);-webkit-backdrop-filter:blur(12px) saturate(1.3);
-  border:1px solid rgba(124,92,255,.12);
-  box-shadow:var(--shadow),0 0 0 1px rgba(255,255,255,.04);cursor:grab;
-  opacity:.92;touch-action:none;user-select:none;
-  transition:opacity .3s, box-shadow .3s, transform .3s;
+  display:none !important; /* replaced by panel-center camera-main */
 }
 .camera-mini:hover{opacity:1;box-shadow:0 12px 40px rgba(0,0,0,.6),0 0 20px rgba(124,92,255,.1);transform:scale(1.01)}
 .camera-mini.dragging{opacity:1;cursor:grabbing;box-shadow:0 16px 48px rgba(0,0,0,.7);z-index:55}
@@ -270,12 +406,13 @@ body::after{
 }
 .camera-full .cam-actions button:hover{background:var(--bg4);border-color:var(--accent)}
 
-/* ═══════════════ BOTTOM INPUT AREA ═══════════════ */
+/* ═══════════════ BOTTOM INPUT AREA (inside panel-right) ═══════════════ */
 .input-area{
-  flex-shrink:0;padding:12px 20px 20px;
-  background:linear-gradient(180deg,transparent 0%,var(--bg) 20%);
+  flex-shrink:0;padding:8px 14px 14px;
+  background:linear-gradient(180deg,transparent 0%,rgba(18,18,30,.8) 30%);
+  border-top:1px solid var(--border);
 }
-.input-area-inner{max-width:760px;margin:0 auto}
+.input-area-inner{}
 
 /* Quick Chips — (styles below in CHIP HOVER GLOW section) */
 .chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:12px}
@@ -372,6 +509,10 @@ body::after{
 .memory-item h4{font-size:14px;color:var(--accent2);margin-bottom:4px;display:flex;align-items:center;gap:6px}
 .memory-item p{font-size:12px;color:var(--text2);line-height:1.4}
 .memory-item .mem-time{font-size:10px;color:var(--text3);margin-top:4px}
+.memory-item .mem-coords{
+  font-size:10px;color:var(--accent2);margin-top:3px;
+  font-family:var(--mono);opacity:.8;
+}
 .memory-empty{text-align:center;padding:40px 20px;color:var(--text3);font-size:14px}
 
 /* ═══════════════ D-PAD Overlay ═══════════════ */
@@ -397,16 +538,25 @@ body::after{
 .dpad button.empty{visibility:hidden}
 
 /* ═══════════════ RESPONSIVE ═══════════════ */
+@media(max-width:1100px){
+  .main{grid-template-columns:240px 1fr 320px}
+}
+@media(max-width:900px){
+  .main{grid-template-columns:1fr;grid-template-rows:auto 1fr auto}
+  .panel-left{grid-row:auto;flex-direction:row;border-right:none;border-bottom:1px solid var(--border);max-height:200px;overflow-x:auto}
+  .map-section{min-width:200px}
+  .telem-section{flex-direction:row;overflow-x:auto}
+  .panel-center{border-right:none;border-bottom:1px solid var(--border);max-height:280px}
+  .panel-right{grid-row:auto}
+}
 @media(max-width:600px){
   .header{padding:0 12px}
   .logo-sub{display:none}
   .status-dot span{display:none}
-  .chat-container{padding:0 12px}
-  .input-area{padding:8px 12px 14px}
-  .chips{gap:6px}
-  .chip{padding:6px 12px;font-size:12px}
-  .camera-mini{width:130px;top:8px;right:8px}
-  .welcome h2{font-size:20px}
+  .chat-container{padding:0 10px}
+  .input-area{padding:6px 10px 10px}
+  .chips{gap:5px}
+  .chip{padding:5px 10px;font-size:11px}
   .dpad-overlay{bottom:90px;left:10px}
   .memory-panel{width:300px}
 }
@@ -457,17 +607,9 @@ body::after{
 .btn-icon.tts-muted{color:var(--red);border-color:rgba(239,68,68,.3)}
 .btn-icon.tts-muted:hover{background:rgba(239,68,68,.1)}
 
-/* ═══════════════ TELEMETRY PANEL ═══════════════ */
-.telemetry-overlay{
-  position:fixed;inset:0;z-index:250;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);
-  display:none;
-}
-.telemetry-overlay.show{display:block}
-.telemetry-panel{
-  position:fixed;top:0;right:-400px;width:380px;height:100%;z-index:260;
-  background:var(--bg2);border-left:1px solid var(--border2);
-  transition:right .3s ease;display:flex;flex-direction:column;
-}
+/* ═══════════════ TELEMETRY PANEL (legacy slide-out — hidden in new layout) ═══════════════ */
+.telemetry-overlay{display:none !important}
+.telemetry-panel{display:none !important}
 .telemetry-panel.show{right:0}
 .telemetry-header{
   padding:16px 20px;border-bottom:1px solid var(--border);
@@ -494,24 +636,29 @@ body::after{
 .telem-bar-fill{height:100%;border-radius:3px;transition:width .5s,background .5s}
 .telem-mini-map{
   width:100%;aspect-ratio:1;background:var(--bg);border-radius:8px;border:1px solid var(--border);
-  position:relative;overflow:hidden;margin-top:8px;
+  position:relative;overflow:hidden;margin-top:8px;cursor:pointer;
+  min-height:300px;
 }
-.telem-mini-map .robot-dot{
-  position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);
-  box-shadow:0 0 8px var(--accent-glow);transform:translate(-50%,-50%);
-  left:50%;top:50%;transition:left .5s,top .5s;
+.telem-mini-map canvas{position:absolute;inset:0;width:100%;height:100%}
+.telem-mini-map .map-label{
+  position:absolute;bottom:4px;left:6px;font-size:8px;color:var(--text3);
+  font-family:var(--mono);pointer-events:none;
 }
-.telem-mini-map .robot-trail{position:absolute;inset:0}
-.telem-mini-map .grid-lines{
-  position:absolute;inset:0;
-  background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
-  background-size:20% 20%;
+/* Expanded map overlay */
+.map-expanded{
+  position:fixed;inset:20px;z-index:300;
+  background:var(--bg);border-radius:16px;border:1px solid var(--border);
+  box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;display:none;
 }
-.telem-mini-map .axis-label{
-  position:absolute;font-size:8px;color:var(--text3);font-family:var(--mono);
+.map-expanded.show{display:flex;flex-direction:column}
+.map-expanded .map-header{
+  padding:12px 16px;display:flex;align-items:center;justify-content:space-between;
+  border-bottom:1px solid var(--border);
 }
-.telem-mini-map .axis-label.x-axis{bottom:2px;left:50%;transform:translateX(-50%)}
-.telem-mini-map .axis-label.y-axis{left:2px;top:50%;transform:translateY(-50%) rotate(-90deg)}
+.map-expanded .map-header h3{margin:0;font-size:14px;color:var(--text1)}
+.map-expanded .map-close{background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer}
+.map-expanded .map-canvas-wrap{flex:1;position:relative;overflow:hidden}
+.map-expanded canvas{position:absolute;inset:0;width:100%;height:100%}
 
 /* ═══════════════ CONSOLE LOG ═══════════════ */
 .console-toggle{
@@ -640,19 +787,21 @@ body::after{
 
 /* ═══════════════ CHAIN-OF-THOUGHT UI ═══════════════ */
 .cot-card{
-  margin:12px 0;padding:14px 16px;border-radius:var(--radius);
-  background:var(--glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
-  border:1px solid rgba(124,92,255,.15);
+  margin:12px 0;padding:16px 18px;border-radius:var(--radius);
+  background:linear-gradient(135deg,rgba(22,22,42,.75),rgba(30,30,52,.6));
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(124,92,255,.18);
   animation:fadeIn .3s;overflow:hidden;
-  box-shadow:0 4px 20px rgba(124,92,255,.08);
+  box-shadow:0 4px 24px rgba(124,92,255,.1),inset 0 1px 0 rgba(255,255,255,.04);
 }
 .cot-header{
   display:flex;align-items:center;justify-content:space-between;
-  cursor:pointer;padding-bottom:8px;
+  cursor:pointer;padding-bottom:10px;
 }
 .cot-header .cot-title{
   font-size:13px;font-weight:600;color:var(--accent2);
   display:flex;align-items:center;gap:8px;
+  text-shadow:0 0 20px rgba(167,139,250,.3);
 }
 .cot-header .cot-toggle{
   font-size:10px;color:var(--text3);transition:transform .3s ease;
@@ -660,25 +809,51 @@ body::after{
 .cot-card.collapsed .cot-toggle{transform:rotate(-90deg)}
 .cot-card.collapsed .cot-steps{height:0;overflow:hidden;padding:0;margin:0}
 .cot-steps{
-  padding-top:8px;border-top:1px solid rgba(124,92,255,.1);
+  padding-top:10px;border-top:1px solid rgba(124,92,255,.12);
   transition:height .3s ease;
+  max-height:400px;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:rgba(124,92,255,.2) transparent;
 }
+.cot-steps::-webkit-scrollbar{width:4px}
+.cot-steps::-webkit-scrollbar-thumb{background:rgba(124,92,255,.25);border-radius:2px}
 .cot-step{
-  display:flex;align-items:flex-start;gap:10px;padding:6px 0;
-  font-size:12px;color:var(--text2);line-height:1.5;
+  display:flex;align-items:flex-start;gap:10px;padding:8px 10px;margin:3px 0;
+  font-size:12px;color:var(--text2);line-height:1.6;
   animation:cotStepIn .4s ease-out;
   font-family:var(--mono);
+  border-radius:8px;
+  transition:background .2s ease;
 }
+.cot-step:hover{background:rgba(124,92,255,.05)}
 @keyframes cotStepIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
-.cot-step .cot-icon{font-size:14px;flex-shrink:0;min-width:20px;text-align:center}
-.cot-step .cot-text{color:var(--text2)}
+.cot-step .cot-icon{font-size:15px;flex-shrink:0;min-width:22px;text-align:center;margin-top:1px}
+.cot-step .cot-text{color:var(--text2);flex:1}
+.cot-step .cot-text strong{color:var(--text);font-weight:600}
+.cot-step.active{background:rgba(124,92,255,.08);border-left:2px solid var(--accent2)}
 .cot-step.active .cot-text{color:var(--accent2)}
 .cot-step.done .cot-text{color:var(--green)}
 .cot-step.done .cot-icon{color:var(--green)}
 .cot-step .cot-spinner{
   display:inline-block;width:12px;height:12px;border:2px solid var(--accent);
   border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;
-  margin-right:2px;
+  margin-right:4px;vertical-align:middle;
+}
+/* VLM scene description in CoT steps */
+.cot-vlm-desc{
+  display:block;margin-top:4px;padding:4px 8px;
+  font-size:11px;line-height:1.5;color:var(--text3);
+  background:rgba(255,255,255,.03);border-radius:6px;
+  border-left:2px solid rgba(59,130,246,.3);
+  font-family:var(--font);
+  max-height:4.5em;overflow:hidden;cursor:pointer;
+  transition:max-height .3s ease;
+}
+.cot-vlm-desc.expanded{
+  max-height:none;
+}
+/* LLM reasoning text */
+.cot-reason{
+  font-style:italic;color:var(--text3);font-size:11px;
 }
 
 /* ═══════════════ TYPEWRITER EFFECT ═══════════════ */
@@ -765,53 +940,154 @@ body::after{
   </span>
 </div>
 
-<!-- ═══════════ MAIN ═══════════ -->
+<!-- ═══════════ MAIN: 3-COLUMN DASHBOARD ═══════════ -->
 <div class="main">
-  <!-- Camera Mini View -->
-  <div class="camera-mini hidden" id="camera-mini">
-    <img id="cam-mini-img" src="" alt="Camera"/>
-    <div class="cam-bbox-overlay" id="cam-mini-bbox"></div>
-    <div class="cam-label">● LIVE</div>
-    <div class="cam-expand">⛶</div>
-  </div>
-
-  <!-- Chat Area -->
-  <div class="chat-area" id="chat-area">
-    <div class="chat-container" id="chat-container">
-      <!-- Welcome Screen -->
-      <div class="welcome" id="welcome-screen">
-        <div class="welcome-icon"><img src="/vlm/image/Kmutnb_logo.jpg" alt="KMUTNB"/></div>
-        <h2>สวัสดีครับ ผม VORA</h2>
-        <p>ผู้ช่วยหุ่นยนต์อัจฉริยะ พร้อมรับคำสั่งเสียงหรือพิมพ์<br/>บอกผมได้เลยว่าต้องทำอะไรครับ</p>
+  
+  <!-- ═══ LEFT PANEL: Map + Telemetry ═══ -->
+  <div class="panel-left">
+    <div class="map-section">
+      <h3>🗺️ SLAM Map</h3>
+      <div class="map-live" id="telem-map" onclick="toggleExpandedMap()" title="Click to expand">
+        <canvas id="map-canvas" width="400" height="400"></canvas>
+        <span class="map-label" id="map-label">Loading map...</span>
+        <span class="map-pos-label" id="map-pos-label">X:0.00 Y:0.00</span>
+      </div>
+    </div>
+    <div class="telem-section">
+      <div class="telem-compact">
+        <h4>📍 Position</h4>
+        <div class="telem-row">
+          <span class="telem-label">X</span>
+          <span class="telem-value" id="telem-pos-x">0.00 m</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">Y</span>
+          <span class="telem-value" id="telem-pos-y">0.00 m</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">θ</span>
+          <span class="telem-value" id="telem-pos-th">0.0°</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">Source</span>
+          <span class="telem-value" id="telem-pos-src" style="font-size:9px">--</span>
+        </div>
+      </div>
+      <div class="telem-compact">
+        <h4>⚡ Power</h4>
+        <div class="telem-row">
+          <span class="telem-label">Battery</span>
+          <span class="telem-value" id="telem-batt">-- %</span>
+        </div>
+        <div class="telem-bar"><div class="telem-bar-fill" id="telem-batt-bar" style="width:0%;background:var(--green)"></div></div>
+        <div class="telem-row" style="margin-top:4px">
+          <span class="telem-label">Voltage</span>
+          <span class="telem-value" id="telem-volt">-- V</span>
+        </div>
+      </div>
+      <div class="telem-compact">
+        <h4>🌐 Network</h4>
+        <div class="telem-row">
+          <span class="telem-label">Server</span>
+          <span class="telem-value" id="telem-server-ping">-- ms</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">Gateway</span>
+          <span class="telem-value" id="telem-gw-ping">-- ms</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">Camera</span>
+          <span class="telem-value" id="telem-fps">--</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">Frame</span>
+          <span class="telem-value" id="telem-frame-size">-- KB</span>
+        </div>
+      </div>
+      <div class="telem-compact">
+        <h4>🤖 System</h4>
+        <div class="telem-row">
+          <span class="telem-label">Model</span>
+          <span class="telem-value" id="telem-model">--</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">GPU</span>
+          <span class="telem-value" id="telem-gpu">--</span>
+        </div>
+        <div class="telem-row">
+          <span class="telem-label">Uptime</span>
+          <span class="telem-value" id="telem-uptime">--</span>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Bottom Input Area -->
-  <div class="input-area">
-    <div class="input-area-inner">
-      <div class="transcript-bar" id="transcript-bar"></div>
-      <div class="chips" id="chips">
-        <div class="chip" data-cmd="หาปากกา">🔍 หาปากกา</div>
-        <div class="chip" data-cmd="หาดินสอ">🔍 หาดินสอ</div>
-        <div class="chip" data-cmd="ไปข้างหน้า">⬆️ เดินหน้า</div>
-        <div class="chip" data-cmd="ถอยหลัง">⬇️ ถอยหลัง</div>
-        <div class="chip" data-cmd="เลี้ยวซ้าย">⬅️ ซ้าย</div>
-        <div class="chip" data-cmd="เลี้ยวขวา">➡️ ขวา</div>
-        <div class="chip danger" data-cmd="หยุด">🛑 หยุด</div>
+  <!-- ═══ CENTER PANEL: Camera Feed + Controls ═══ -->
+  <div class="panel-center">
+    <div class="camera-main" id="camera-main">
+      <div class="cam-label">● LIVE</div>
+      <img id="cam-center-img" src="" alt="Camera"/>
+      <div class="camera-no-feed" id="cam-no-feed">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        Waiting for camera...
       </div>
-      <div class="input-box" id="input-box">
-        <textarea id="text-input" rows="1" placeholder="พูดหรือพิมพ์คำสั่ง..." autocomplete="off"></textarea>
-        <button class="input-btn send" id="btn-send" title="Send">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        </button>
-        <button class="input-btn mic" id="btn-mic" title="Voice Input">
-          <span class="mic-glow-ring"></span>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-        </button>
+      <div class="cam-actions-bar">
+        <button onclick="captureFrame()">📸 Capture</button>
+        <button onclick="sendCmd('อธิบายภาพ')">🧠 Describe</button>
+        <button onclick="openCameraFull()">⛶ Fullscreen</button>
+      </div>
+    </div>
+    <div class="control-strip">
+      <button class="ctrl-btn" data-cmd="หาปากกา">🔍 หาปากกา</button>
+      <button class="ctrl-btn" data-cmd="หาดินสอ">🔍 หาดินสอ</button>
+      <button class="ctrl-btn" data-cmd="ไปข้างหน้า">⬆ เดินหน้า</button>
+      <button class="ctrl-btn" data-cmd="ถอยหลัง">⬇ ถอยหลัง</button>
+      <button class="ctrl-btn" data-cmd="เลี้ยวซ้าย">⬅ ซ้าย</button>
+      <button class="ctrl-btn" data-cmd="เลี้ยวขวา">➡ ขวา</button>
+      <button class="ctrl-btn danger" data-cmd="หยุด">🛑 หยุด</button>
+    </div>
+  </div>
+
+  <!-- ═══ RIGHT PANEL: Chat + Input ═══ -->
+  <div class="panel-right">
+    <div class="chat-header">
+      <h3>💬 Command Log</h3>
+    </div>
+    <!-- Legacy camera mini (hidden, kept for JS compat) -->
+    <div class="camera-mini hidden" id="camera-mini">
+      <img id="cam-mini-img" src="" alt="Camera"/>
+      <div class="cam-bbox-overlay" id="cam-mini-bbox"></div>
+      <div class="cam-label">● LIVE</div>
+      <div class="cam-expand">⛶</div>
+    </div>
+
+    <div class="chat-area" id="chat-area">
+      <div class="chat-container" id="chat-container">
+        <div class="welcome" id="welcome-screen">
+          <div class="welcome-icon"><img src="/vlm/image/Kmutnb_logo.jpg" alt="KMUTNB"/></div>
+          <h2>VORA</h2>
+          <p>พร้อมรับคำสั่ง</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-area-inner">
+        <div class="transcript-bar" id="transcript-bar"></div>
+        <div class="input-box" id="input-box">
+          <textarea id="text-input" rows="1" placeholder="พูดหรือพิมพ์คำสั่ง..." autocomplete="off"></textarea>
+          <button class="input-btn send" id="btn-send" title="Send">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+          <button class="input-btn mic" id="btn-mic" title="Voice Input">
+            <span class="mic-glow-ring"></span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </button>
+        </div>
       </div>
     </div>
   </div>
+
 </div>
 
 <!-- ═══════════ CAMERA FULLSCREEN ═══════════ -->
@@ -896,85 +1172,17 @@ body::after{
   E-STOP
 </button>
 
-<!-- ═══════════ TELEMETRY SIDEBAR ═══════════ -->
-<div class="telemetry-overlay" id="telemetry-overlay"></div>
-<div class="telemetry-panel" id="telemetry-panel">
-  <div class="telemetry-header">
-    <h3>📊 Robot Telemetry</h3>
-    <button class="btn-icon" onclick="closeTelemetry()">✕</button>
+<!-- OLD TELEMETRY SIDEBAR removed — now in left panel -->
+<!-- Expanded Map Overlay (kept for fullscreen map) -->
+<div class="map-expanded" id="map-expanded" style="display:none">
+  <div class="map-header">
+    <h3>🗺️ SLAM Map — Real-time</h3>
+    <button class="map-close" onclick="toggleExpandedMap()">✕</button>
   </div>
-  <div class="telemetry-body">
-    <div class="telem-card">
-      <h4>⚡ Power</h4>
-      <div class="telem-row">
-        <span class="telem-label">Battery</span>
-        <span class="telem-value" id="telem-batt">-- %</span>
-      </div>
-      <div class="telem-bar"><div class="telem-bar-fill" id="telem-batt-bar" style="width:0%;background:var(--green)"></div></div>
-      <div class="telem-row" style="margin-top:6px">
-        <span class="telem-label">Voltage</span>
-        <span class="telem-value" id="telem-volt">-- V</span>
-      </div>
-    </div>
-    <div class="telem-card">
-      <h4>🌐 Network</h4>
-      <div class="telem-row">
-        <span class="telem-label">Server Ping</span>
-        <span class="telem-value" id="telem-server-ping">-- ms</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">Gateway Ping</span>
-        <span class="telem-value" id="telem-gw-ping">-- ms</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">Camera FPS</span>
-        <span class="telem-value" id="telem-fps">--</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">Frame Size</span>
-        <span class="telem-value" id="telem-frame-size">-- KB</span>
-      </div>
-    </div>
-    <div class="telem-card">
-      <h4>📍 Position</h4>
-      <div class="telem-row">
-        <span class="telem-label">X</span>
-        <span class="telem-value" id="telem-pos-x">0.00 m</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">Y</span>
-        <span class="telem-value" id="telem-pos-y">0.00 m</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">θ (Heading)</span>
-        <span class="telem-value" id="telem-pos-th">0.0°</span>
-      </div>
-      <div class="telem-mini-map" id="telem-map">
-        <div class="grid-lines"></div>
-        <canvas class="robot-trail" id="telem-trail" width="200" height="200"></canvas>
-        <div class="robot-dot" id="telem-dot"></div>
-        <span class="axis-label x-axis">X</span>
-        <span class="axis-label y-axis">Y</span>
-      </div>
-    </div>
-    <div class="telem-card">
-      <h4>🤖 System</h4>
-      <div class="telem-row">
-        <span class="telem-label">Model</span>
-        <span class="telem-value" id="telem-model">--</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">GPU</span>
-        <span class="telem-value" id="telem-gpu">--</span>
-      </div>
-      <div class="telem-row">
-        <span class="telem-label">Uptime</span>
-        <span class="telem-value" id="telem-uptime">--</span>
-      </div>
-    </div>
+  <div class="map-canvas-wrap">
+    <canvas id="map-canvas-big" width="800" height="800"></canvas>
   </div>
 </div>
-
 <!-- ═══════════ CONSOLE LOG ═══════════ -->
 <button class="console-toggle" id="btn-console">
   🖥️ Terminal
@@ -1045,7 +1253,9 @@ const transcriptBar = $('transcript-bar');
 const ttsAudio      = $('tts-audio');
 const camMini       = $('camera-mini');
 const camMiniImg    = $('cam-mini-img');
+const camCenterImg  = $('cam-center-img');
 const camFullImg    = $('cam-full-img');
+const camNoFeed     = $('cam-no-feed');
 
 // ── State ───────────────────────────────────────────────────
 let audioWs      = null;
@@ -1092,6 +1302,7 @@ async function init() {
   startCamera();
   enumerateMics();
   setupChips();
+  setupControlStrip();
   setupHeaderButtons();
   setupDpad();
   setupEstop();
@@ -1109,15 +1320,22 @@ function setupChips() {
   });
 }
 
+function setupControlStrip() {
+  document.querySelectorAll('.ctrl-btn[data-cmd]').forEach(btn => {
+    btn.onclick = () => sendCmd(btn.dataset.cmd);
+  });
+}
+
 function setupHeaderButtons() {
   $('btn-settings').onclick = openSettings;
   $('btn-memory').onclick = openMemory;
   // D-pad toggle handled by floating IIFE below
   $('btn-tts-toggle').onclick = toggleTTSMute;
-  $('btn-telemetry').onclick = openTelemetry;
+  if ($('btn-telemetry')) $('btn-telemetry').onclick = openTelemetry;
   $('memory-overlay').onclick = closeMemory;
-  $('telemetry-overlay').onclick = closeTelemetry;
+  if ($('telemetry-overlay')) $('telemetry-overlay').onclick = closeTelemetry;
   camMini.onclick = openCameraFull;
+  if (camCenterImg) camCenterImg.onclick = openCameraFull;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1246,16 +1464,18 @@ function removeSearchCard() {
   if (el) el.remove();
 }
 
-function showFoundCard(target, imageUrl, description) {
+function showFoundCard(target, imageUrl, description, robotX, robotY) {
   removeSearchCard();
   ensureChatStarted();
   const el = document.createElement('div');
   el.className = 'found-card';
   const imgHtml = imageUrl ? `<img class="found-img" src="${imageUrl}" onerror="this.style.display='none'" alt="${target}"/>` : '';
   const descHtml = description ? `<div class="found-text">${description}</div>` : '';
+  const hasCoords = (robotX !== undefined && robotY !== undefined && (robotX !== 0 || robotY !== 0));
+  const coordHtml = hasCoords ? `<div class="found-coords">🗺️ Map position: X=${robotX.toFixed(2)}m, Y=${robotY.toFixed(2)}m</div>` : '';
   el.innerHTML = `
     <div class="found-header">✅ เจอแล้ว: ${target}</div>
-    ${imgHtml}${descHtml}`;
+    ${imgHtml}${descHtml}${coordHtml}`;
   chatContainer.appendChild(el);
   scrollChat();
 }
@@ -1549,34 +1769,68 @@ function handleDashboardEvent(data) {
         }
         return;
       case 'scanning':
-        updateSearchProgress(
-          data.iteration || data.step || 0,
-          data.max_iterations || data.total_steps || 12,
-          `สแกนรอบที่ ${data.iteration || data.step || '?'}/${data.max_iterations || data.total_steps || '?'} (VLM ${data.total_checks || '?'} ครั้ง)`
-        );
-        setRobotState('searching');
-        // CoT step
-        addCotStep('🗺️', `Scan iteration ${data.iteration || data.step || '?'} — VLM analyzing frame...`, 'active');
+        {
+          const step = data.step || 0;
+          const maxSteps = data.max_steps || 12;
+          const action = data.action || '';
+          const angle = data.angle || 0;
+          const reason = data.reason || '';
+          const desc = data.description || '';
+          const checks = data.total_checks || '?';
+          
+          updateSearchProgress(step, maxSteps,
+            `Step ${step}/${maxSteps} — VLM checks: ${checks}`
+          );
+          setRobotState('searching');
+          
+          // Build rich CoT step content
+          let cotIcon = '🗺️';
+          let cotText = '';
+          if (action === 'turn') {
+            cotIcon = angle > 0 ? '↰' : '↱';
+            cotText = `<strong>Step ${step}</strong> Turn ${angle > 0 ? 'left' : 'right'} ${Math.abs(angle)}°`;
+          } else if (action === 'forward') {
+            cotIcon = '🚶';
+            cotText = `<strong>Step ${step}</strong> Move forward`;
+            if (Math.abs(angle) > 5) cotText += ` (heading ${angle > 0 ? '+' : ''}${angle}°)`;
+          } else {
+            cotText = `<strong>Step ${step || '?'}</strong> Scanning...`;
+          }
+          if (reason) cotText += ` <span class="cot-reason">— ${reason}</span>`;
+          if (desc) cotText += `<br/><span class="cot-vlm-desc" onclick="this.classList.toggle('expanded')" title="Click to expand">👁️ ${desc}</span>`;
+          
+          addCotStep(cotIcon, cotText, 'active');
+        }
         return;
       case 'approaching':
-        // Robot is moving toward the detected object
-        addCotStep('🚶', `Approaching ${data.target} — step ${data.step || '?'}/${data.max_steps || '?'}`, 'active');
-        updateSearchProgress(
-          data.step || 0,
-          data.max_steps || 6,
-          `🚶 เคลื่อนที่เข้าหา ${data.target} (${data.step || '?'}/${data.max_steps || '?'})`
-        );
-        setRobotState('searching');
+        {
+          const step = data.step || 0;
+          const maxSteps = data.max_steps || 6;
+          const desc = data.description || '';
+          const loc = data.location || '';
+          let cotText = `<strong>Approaching</strong> ${data.target} — step ${step}/${maxSteps}`;
+          if (loc) cotText += ` <span class="cot-reason">[${loc}]</span>`;
+          if (desc) cotText += `<br/><span class="cot-vlm-desc" onclick="this.classList.toggle('expanded')" title="Click to expand">👁️ ${desc}</span>`;
+          addCotStep('🚶', cotText, 'active');
+          updateSearchProgress(step, maxSteps,
+            `🚶 เคลื่อนที่เข้าหา ${data.target} (${step}/${maxSteps})`
+          );
+          setRobotState('searching');
+        }
         return;
       case 'found':
         // CoT finish
-        addCotStep('🎯', `Object localized: ${data.location || 'detected'}`, 'done');
+        if (data.description) addCotStep('👁️', `VLM: <span class="cot-vlm-desc expanded">${data.description}</span>`, 'done');
+        addCotStep('🎯', `Object localized: <strong>${data.location || 'detected'}</strong>`, 'done');
+        if (data.robot_x !== undefined) addCotStep('🗺️', `Map: X=${data.robot_x.toFixed(2)}, Y=${data.robot_y.toFixed(2)}`, 'done');
         addCotStep('✅', `Target <strong>${data.target}</strong> found!`, 'done');
         finishChainOfThought();
         showFoundCard(
           data.target || 'Object',
           data.capture_url ? `${SERVER_BASE}${data.capture_url}` : null,
-          data.announce || data.description || ''
+          data.announce || data.description || '',
+          data.robot_x,
+          data.robot_y
         );
         showBBox('found', data.target, data.location);
         setRobotState('idle');
@@ -1630,7 +1884,9 @@ function handleDashboardEvent(data) {
       showFoundCard(
         data.target || 'Object',
         data.capture_url ? `${SERVER_BASE}${data.capture_url}` : null,
-        data.description || ''
+        data.description || '',
+        data.robot_x,
+        data.robot_y
       );
       break;
     case 'search_not_found':
@@ -1859,6 +2115,8 @@ function startCamera() {
           const url = URL.createObjectURL(blob);
           camMiniImg.onload = () => URL.revokeObjectURL(url);
           camMiniImg.src = url;
+          if (camCenterImg) { camCenterImg.src = url; camCenterImg.style.display = ''; }
+          if (camNoFeed) camNoFeed.style.display = 'none';
           camFullImg.src = url;
           setStatus('st-camera', true);
           // Track FPS
@@ -1873,6 +2131,8 @@ function startCamera() {
       }
     } catch(e) {
       setStatus('st-camera', false);
+      if (camNoFeed) camNoFeed.style.display = '';
+      if (camCenterImg) camCenterImg.style.display = 'none';
     }
     if (cameraLive) setTimeout(fetchFrame, 150);  // ~6-7 fps
   }
@@ -1967,10 +2227,13 @@ async function loadMemory() {
       const latest = records[0];
       const emoji = emojis[name] || '📦';
       const ageText = latest.age_hours < 1 ? 'เมื่อสักครู่' : `${latest.age_hours.toFixed(1)} ชม. ที่แล้ว`;
+      const hasCoords = (latest.robot_x !== undefined && (latest.robot_x !== 0 || latest.robot_y !== 0));
+      const coordText = hasCoords ? `<div class="mem-coords">🗺️ Map: X=${latest.robot_x.toFixed(2)}m, Y=${latest.robot_y.toFixed(2)}m</div>` : '';
       html += `
         <div class="memory-item">
           <h4>${emoji} ${name}</h4>
           <p>📍 ${latest.location_description || latest.location || 'Unknown location'}</p>
+          ${coordText}
           <div class="mem-time">🕐 ${ageText} · พบ ${records.length} ครั้ง</div>
         </div>`;
     }
@@ -2201,14 +2464,12 @@ function logConsole(dir, text) {
 //  TELEMETRY PANEL
 // ═══════════════════════════════════════════════════════════
 function openTelemetry() {
-  $('telemetry-overlay').classList.add('show');
-  $('telemetry-panel').classList.add('show');
+  // Telemetry now always visible in left panel — no-op
   refreshTelemetry();
 }
 
 function closeTelemetry() {
-  $('telemetry-overlay').classList.remove('show');
-  $('telemetry-panel').classList.remove('show');
+  // Telemetry now always visible in left panel — no-op
 }
 
 async function startPingLoop() {
@@ -2295,7 +2556,7 @@ function refreshTelemetry() {
   battBar.style.background = batt > 50 ? 'var(--green)' : batt > 20 ? 'var(--amber)' : 'var(--red)';
   $('telem-volt').textContent = `${volt.toFixed(1)} V`;
   
-  // Position
+  // Position (fetched from /map/state)
   $('telem-pos-x').textContent = `${robotPos.x.toFixed(2)} m`;
   $('telem-pos-y').textContent = `${robotPos.y.toFixed(2)} m`;
   $('telem-pos-th').textContent = `${(robotPos.th * 180 / Math.PI).toFixed(1)}°`;
@@ -2314,51 +2575,238 @@ function refreshTelemetry() {
   const s = uptimeSec % 60;
   $('telem-uptime').textContent = `${h}h ${m}m ${s}s`;
   
-  // Update mini map dot
-  updateMiniMap();
+  // Render map canvases
+  renderMapCanvas('map-canvas');
+  if ($('map-expanded').classList.contains('show')) {
+    renderMapCanvas('map-canvas-big');
+  }
 }
 
-function updateMiniMap() {
-  const dot = $('telem-dot');
-  if (!dot) return;
-  
-  // Map robot position to mini map (centered at 50%, scale ~1m = 10%)
-  const scale = 10; // 10% per meter
-  const cx = 50 + robotPos.x * scale;
-  const cy = 50 - robotPos.y * scale; // Y inverted for screen
-  dot.style.left = `${Math.max(5, Math.min(95, cx))}%`;
-  dot.style.top = `${Math.max(5, Math.min(95, cy))}%`;
-  
-  // Draw trail
-  trailPoints.push({ x: cx, y: cy });
-  if (trailPoints.length > 100) trailPoints.shift();
-  
-  const canvas = $('telem-trail');
-  if (canvas && canvas.getContext) {
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    
-    if (trailPoints.length > 1) {
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(124, 92, 255, 0.4)';
-      ctx.lineWidth = 1.5;
-      ctx.moveTo(trailPoints[0].x / 100 * w, trailPoints[0].y / 100 * h);
-      for (let i = 1; i < trailPoints.length; i++) {
-        ctx.lineTo(trailPoints[i].x / 100 * w, trailPoints[i].y / 100 * h);
+// ═══════════════════════════════════════════════════════════
+//  SLAM MAP RENDERING
+// ═══════════════════════════════════════════════════════════
+let mapImage = null;       // HTMLImageElement of SLAM map PNG
+let mapInfo = null;        // {width, height, resolution, origin}
+let mapObjects = [];       // [{name, location, ...}]
+let mapImageLoaded = false;
+
+// Load SLAM map image once
+(function loadMapImage() {
+  const img = new Image();
+  img.onload = () => { mapImage = img; mapImageLoaded = true;
+    $('map-label').textContent = `Map: ${img.width}×${img.height}`;
+  };
+  img.onerror = () => { $('map-label').textContent = 'Map not available'; };
+  img.src = '/map/image';
+})();
+
+// Fetch map state (robot pose + objects) — called every 500ms
+async function fetchMapState() {
+  try {
+    const r = await fetch('/map/state');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.robot) {
+      robotPos.x = d.robot.x;
+      robotPos.y = d.robot.y;
+      robotPos.th = d.robot.theta;
+      // Update position source indicator
+      if ($('telem-pos-src')) {
+        const src = d.robot.source || 'none';
+        const srcLabel = src === 'odom' ? '📡 Odom' : src === 'dead_reckoning' ? '🧭 DR' : '—';
+        $('telem-pos-src').textContent = srcLabel;
       }
-      ctx.stroke();
+      // Update map position overlay
+      if ($('map-pos-label')) {
+        $('map-pos-label').textContent = `X:${robotPos.x.toFixed(2)} Y:${robotPos.y.toFixed(2)}`;
+      }
     }
+    if (d.map && !mapInfo) {
+      mapInfo = d.map;
+    }
+    if (d.objects) {
+      mapObjects = d.objects;
+    }
+  } catch(e) {}
+}
+setInterval(fetchMapState, 500);
+
+// Compute viewport that encompasses SLAM map + robot position (auto-expand)
+function getMapViewport() {
+  if (!mapInfo || !mapInfo.resolution) return null;
+  const res = mapInfo.resolution;
+  const ox = mapInfo.origin[0];
+  const oy = mapInfo.origin[1];
+  const mw = mapInfo.width;
+  const mh = mapInfo.height;
+  
+  // Map extents in world coords
+  let minWx = ox;
+  let maxWx = ox + mw * res;
+  let minWy = oy;
+  let maxWy = oy + mh * res;
+  
+  // Expand viewport to include robot position (with padding)
+  const PAD = 0.3; // 30cm padding around robot
+  const rx = robotPos.x;
+  const ry = robotPos.y;
+  minWx = Math.min(minWx, rx - PAD);
+  maxWx = Math.max(maxWx, rx + PAD);
+  minWy = Math.min(minWy, ry - PAD);
+  maxWy = Math.max(maxWy, ry + PAD);
+  
+  return { minWx, maxWx, minWy, maxWy, res, ox, oy, mw, mh };
+}
+
+// Convert world coords (meters) to canvas pixel coords
+function worldToCanvas(wx, wy, cw, ch) {
+  const vp = getMapViewport();
+  if (!vp) return { px: cw/2, py: ch/2 };
+  
+  // Total viewport size in world meters
+  const vpW = vp.maxWx - vp.minWx;
+  const vpH = vp.maxWy - vp.minWy;
+  
+  // Uniform scale (world meters → canvas pixels)
+  const scale = Math.min(cw / vpW, ch / vpH);
+  const offx = (cw - vpW * scale) / 2;
+  const offy = (ch - vpH * scale) / 2;
+  
+  // World → canvas pixel
+  const px = (wx - vp.minWx) * scale + offx;
+  const py = (vp.maxWy - wy) * scale + offy; // flip Y (world Y-up → canvas Y-down)
+  return { px, py };
+}
+
+function renderMapCanvas(canvasId) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cw = canvas.width;
+  const ch = canvas.height;
+  
+  // Clear
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, cw, ch);
+  
+  // Draw SLAM map image (using auto-expanding viewport)
+  if (mapImageLoaded && mapImage && mapInfo) {
+    const vp = getMapViewport();
+    if (vp) {
+      const vpW = vp.maxWx - vp.minWx;
+      const vpH = vp.maxWy - vp.minWy;
+      const scale = Math.min(cw / vpW, ch / vpH);
+      const globalOffx = (cw - vpW * scale) / 2;
+      const globalOffy = (ch - vpH * scale) / 2;
+      
+      // SLAM map image position within the expanded viewport
+      const mapDrawW = vp.mw * vp.res * scale;
+      const mapDrawH = vp.mh * vp.res * scale;
+      const mapDrawX = (vp.ox - vp.minWx) * scale + globalOffx;
+      const mapDrawY = (vp.maxWy - (vp.oy + vp.mh * vp.res)) * scale + globalOffy;
+      
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(mapImage, mapDrawX, mapDrawY, mapDrawW, mapDrawH);
+      ctx.globalAlpha = 1.0;
+    }
+  } else {
+    ctx.fillStyle = '#333';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Map loading...', cw/2, ch/2);
+    return;
+  }
+  
+  // Draw trail (stored in world coords, converted each frame)
+  if (trailPoints.length > 1) {
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(124, 92, 255, 0.5)';
+    ctx.lineWidth = canvasId === 'map-canvas-big' ? 2.5 : 1.5;
+    const tp0 = worldToCanvas(trailPoints[0].wx, trailPoints[0].wy, cw, ch);
+    ctx.moveTo(tp0.px, tp0.py);
+    for (let i = 1; i < trailPoints.length; i++) {
+      const tpi = worldToCanvas(trailPoints[i].wx, trailPoints[i].wy, cw, ch);
+      ctx.lineTo(tpi.px, tpi.py);
+    }
+    ctx.stroke();
+  }
+  
+  // Draw object markers
+  const markerR = canvasId === 'map-canvas-big' ? 8 : 5;
+  const fontSize = canvasId === 'map-canvas-big' ? 11 : 7;
+  for (const obj of mapObjects) {
+    // Objects use robot position at time of detection as approx
+    const wp = worldToCanvas(obj.robot_x || 0, obj.robot_y || 0, cw, ch);
+    ctx.beginPath();
+    ctx.arc(wp.px, wp.py, markerR, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 200, 120, 0.8)';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Label
+    ctx.fillStyle = '#fff';
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(obj.name || '?', wp.px, wp.py - markerR - 2);
+  }
+  
+  // Draw robot position
+  const rp = worldToCanvas(robotPos.x, robotPos.y, cw, ch);
+  const dotR = canvasId === 'map-canvas-big' ? 8 : 5;
+  
+  // Store trail in world coords (viewport-independent)
+  trailPoints.push({ wx: robotPos.x, wy: robotPos.y });
+  if (trailPoints.length > 200) trailPoints.shift();
+  
+  // Heading arrow
+  const arrowLen = dotR * 3;
+  const ax = rp.px + Math.cos(-robotPos.th) * arrowLen; // negate for canvas Y
+  const ay = rp.py + Math.sin(-robotPos.th) * arrowLen;
+  ctx.beginPath();
+  ctx.moveTo(rp.px, rp.py);
+  ctx.lineTo(ax, ay);
+  ctx.strokeStyle = '#ff6b6b';
+  ctx.lineWidth = canvasId === 'map-canvas-big' ? 3 : 2;
+  ctx.stroke();
+  
+  // Robot dot
+  ctx.beginPath();
+  ctx.arc(rp.px, rp.py, dotR, 0, Math.PI * 2);
+  ctx.fillStyle = '#7c5cff';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  
+  // Glow
+  ctx.beginPath();
+  ctx.arc(rp.px, rp.py, dotR + 4, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(124, 92, 255, 0.3)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function toggleExpandedMap() {
+  const panel = $('map-expanded');
+  panel.classList.toggle('show');
+  if (panel.classList.contains('show')) {
+    renderMapCanvas('map-canvas-big');
   }
 }
 
-// Update telemetry panel data every 3 seconds if open
+// Update telemetry data every 3 seconds (always visible in left panel)
 setInterval(() => {
-  if ($('telemetry-panel').classList.contains('show')) {
-    refreshTelemetry();
-  }
+  refreshTelemetry();
 }, 3000);
+
+// Render mini-map every 500ms regardless of panel state
+setInterval(() => {
+  renderMapCanvas('map-canvas');
+  if ($('map-expanded').classList.contains('show')) {
+    renderMapCanvas('map-canvas-big');
+  }
+}, 500);
 
 // ═══════════════════════════════════════════════════════════
 //  VOICE VISUALIZER (Audio Waveform)
