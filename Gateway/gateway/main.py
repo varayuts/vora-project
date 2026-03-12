@@ -586,7 +586,8 @@ async def visual_search(
                 "angular_z": direction,
                 "duration": duration,
             }
-            logger.info(f"🔄 Rotating {degrees}° (duration={duration:.2f}s, cal={SCAN_ROTATION_CAL})")
+            phys_dir = "LEFT(CCW)" if degrees > 0 else "RIGHT(CW)"
+            logger.info(f"🔄 Rotating {degrees}° → {phys_dir} (duration={duration:.2f}s, cal={SCAN_ROTATION_CAL})")
             await motion.exec_motion(rotate_cmd)
         else:
             logger.info(f"🤖 [MOCK] Would rotate {degrees}°")

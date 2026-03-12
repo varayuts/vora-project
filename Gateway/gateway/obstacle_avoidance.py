@@ -64,6 +64,13 @@ SECTOR_DEG = 360 / NUM_SECTORS  # 30° per sector
 _lidar_offset_deg = float(os.getenv("LIDAR_OFFSET_DEG", "0"))
 LIDAR_ANGLE_OFFSET_RAD = math.radians(_lidar_offset_deg)
 
+# ── LiDAR Left/Right Mirror ───────────────────────────────────────────
+# If the LiDAR scan direction (CW vs CCW) doesn't match ROS standard,
+# left and right will be swapped.  LIDAR_MIRROR=1 negates the angle to
+# correct this.  Symptom: robot consistently turns toward walls when LLM
+# picks the "open" direction.
+LIDAR_MIRROR = os.getenv("LIDAR_MIRROR", "1") == "1"
+
 
 class ObstacleAvoidance:
     """
@@ -110,6 +117,8 @@ class ObstacleAvoidance:
             self._scan_sub.subscribe(self._on_scan)
             logger.info(f"✅ Obstacle avoidance started (LiDAR: {SCAN_TOPIC})")
             logger.info(f"   Warning: {OBSTACLE_WARN_M}m | Stop: {OBSTACLE_STOP_M}m | Cone: ±{FRONT_ANGLE_DEG//2}°")
+            if LIDAR_MIRROR:
+                logger.info(f"   🔀 LIDAR_MIRROR=ON (L/R flipped to match physical layout)")
         except Exception as e:
             logger.error(f"❌ Failed to subscribe to {SCAN_TOPIC}: {e}")
     
@@ -169,8 +178,11 @@ class ObstacleAvoidance:
         
         for i, r in enumerate(ranges):
             raw_angle = angle_min + i * angle_increment
-            # Apply mounting offset: LiDAR 0° = robot rear → shift by 180°
+            # Apply mounting offset
             angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+            # Mirror left/right if scan direction is inverted
+            if LIDAR_MIRROR:
+                angle = -angle
             # Normalize to [-π, π]
             while angle > math.pi:
                 angle -= 2 * math.pi
