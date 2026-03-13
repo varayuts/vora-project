@@ -1,0 +1,193 @@
+================================================================
+VORA PROJECT — SLIDE SUMMARY (13 มีนาคม 2026)
+สรุปสำหรับนำเสนออาจารย์
+================================================================
+
+----------------------------------------------------------------
+1. Implementation Detail: Audio → Intent → Robot Action
+----------------------------------------------------------------
+
+Pipeline:
+- Wake word detection (15+ Thai variants: โวร่า, วัวล่า, ฮัลโหล, ...)
+- Audio stream จาก ReSpeaker 4-Mic (MyAGV) หรือ Mobile Webapp
+  → Gateway → Server
+- STT (Faster-Whisper Thai) บน A6000 GPU → transcript ภาษาไทย
+- Intent Parsing ที่ Gateway: จำแนก find_object / go_to / stop / ...
+- Output: Gateway ส่งคำสั่งไปยัง Agent Loop
+
+Key Params: STT latency ~2s, total voice→action ~4–6s
+
+Wake Words (ตัวอย่าง):
+  "vora", "โวร่า", "โวรา", "วัวล่า", "วอล่า", "โบรา",
+  "โรล่า", "โวล่า", "โอร่า", "วอร์รา", "ฮัลโหล", ...
+
+
+----------------------------------------------------------------
+2. Implementation Detail: Intent → Robot Plan (Agent Loop)
+----------------------------------------------------------------
+
+เมื่อได้รับ intent "ค้นหาวัตถุ":
+
+Phase 0: VLM วิเคราะห์ภาพหน้าปัจจุบันก่อน
+
+Agent Loop (สูงสุด 12 steps, 4 forward moves):
+
+  ต่อ Step:
+  [1] LiDAR Scan 360°
+      → 12 sectors × 30°
+      → คัด "ทิศที่โล่ง" (min dist > 0.31m = robot width)
+
+  [2] LLM Planner (gemma3:27b-it-qat) รับ:
+      - ทิศที่ยังไม่ไป (sorted ระยะไกลสุดก่อน)
+      - ทิศที่ไปแล้ว + ผล VLM แต่ละทิศ
+      - Wall streak counter
+      - Turns-at-position counter
+
+  [3] LLM Priority Rules:
+      1. มีทิศที่ยังไม่ตรวจ → หันไปทิศนั้น (widest first)
+      2. ตรวจทุกทิศแล้ว → เดินหน้าออกพื้นที่ใหม่
+      3. Wall streak >= 3 → บังคับเดินหน้า
+      4. หมุน >= 4 ครั้งโดยไม่เดิน → Force Forward (anti-spin)
+
+  [4] Post-Validate:
+      ตรวจมุมที่ LLM เลือกกับ LiDAR จริงๆ (tolerance ±30°)
+      ถ้าผิด → auto-correct ไปทิศที่ LiDAR บอกว่าโล่งจริง
+
+  [5] VLM Check (qwen3-vl:32b) หลังหยุด
+      → วิเคราะห์ภาพ → found / not found
+
+Safety Guard:
+  ถ้ากล้องดับ (stale_count >= 2):
+  → Block forward ทั้งหมด
+  → หันแทน (รอให้กล้องกลับมา)
+  → ไม่นับ wall_streak ระหว่างกล้องดับ
+
+AI Models:
+  - VLM: qwen3-vl:32b (~20GB) — Object detection per frame
+  - LLM: gemma3:27b-it-qat (~15GB) — Direction planning
+  - STT: faster-whisper-th-large-v3 — Thai speech recognition
+  - TTS: gTTS Thai — Voice feedback
+
+
+----------------------------------------------------------------
+3. Deployment & Networking
+----------------------------------------------------------------
+
+TIER 1 — VORA Server
+  Hardware : Workstation + NVIDIA A6000 48GB
+  OS       : Linux
+  Network  : Tailscale VPN (user.tail87d9fe.ts.net)
+  Port     : 8080 (HTTPS/WSS)
+  Role     : Ollama inference (VLM + LLM + STT)
+
+TIER 2 — Gateway
+  Hardware : Notebook PC
+  OS       : Windows 11
+  IP       : 192.168.0.60 (Static LAN)
+  Port     : 9001 (HTTP API)
+  Role     : Agent Loop, Motion Control, Audio Proxy
+
+TIER 3 — MyAGV Robot
+  Hardware : Elephant MyAGV + Jetson Nano 4GB
+  OS       : Ubuntu 20.04 + ROS2 Galactic
+  IP       : 192.168.0.111 (Static LAN)
+  Port     : 9090 (ROSBridge WebSocket)
+  Sensors  : YDLidar G2, Logitech C920, ReSpeaker 4-Mic
+  Role     : Motion execution (/cmd_vel), Camera, LiDAR, Audio
+
+Protocols:
+  Gateway ↔ Robot   : ROSBridge WebSocket → Twist cmd_vel
+  Gateway ↔ Server  : HTTPS + WebSocket via Tailscale VPN
+  Client ↔ Server   : WSS (real-time audio streaming)
+
+Measured Latency:
+  Audio round-trip (voice → transcript) : ~2–3s
+  Total voice-to-robot-action           : ~4–6s
+  Gateway ↔ Robot (ROSBridge)           : ~8ms (LAN)
+
+
+----------------------------------------------------------------
+4. Project Progress Status
+----------------------------------------------------------------
+
+FEATURE                               STATUS
+--------------------------------------+---------
+3-Tier Architecture Deployment        | DONE
+Wake Word + STT Pipeline (Thai)       | DONE
+Dual Audio Input (Robot + Mobile)     | DONE
+LiDAR 360 Sector Analysis             | DONE
+LLM Agent Loop (12 steps)             | DONE
+VLM Object Detection per step         | DONE
+Spatial Memory (checked directions)   | DONE
+Anti-Spin Force-Forward               | DONE (12 มี.ค.)
+Camera Blind Safety Guard             | DONE (12 มี.ค.)
+LiDAR Left/Right Inversion Fix        | DONE (13 มี.ค.)
+Motor Control (cmd_vel timing)        | DONE
+Webapp UI + VLM expandable desc.      | DONE
+Live Camera Feed ใน Webapp            | IN PROGRESS
+End-to-end Demo (ค้นหาสำเร็จ)       | TESTING
+
+
+----------------------------------------------------------------
+5. Problems & Challenges
+----------------------------------------------------------------
+
+PROBLEM                           | CAUSE                                | FIX
+----------------------------------+--------------------------------------+--------------------------------
+หุ่นหันเข้าหากำแพงทุกครั้ง      | LiDAR scan CW ไม่ตรง ROS CCW        | LIDAR_MIRROR flag negate มุม
+                                  | → ซ้าย/ขวาสลับกัน                   | (13 มี.ค.)
+----------------------------------+--------------------------------------+--------------------------------
+หุ่นหมุนวน ไม่เดินหน้า           | LLM ได้ table LiDAR ดิบ             | Rewrite prompt ส่งเฉพาะ
+(11 turn จาก 12 steps)            | → อ่าน ❌/✅ ผิด                    | "ทิศที่โล่ง" (12 มี.ค.)
+----------------------------------+--------------------------------------+--------------------------------
+หุ่นเดินชนกำแพง (camera dead)    | Camera stream หลุด → wall_streak    | Camera Blind Guard
+                                  | พุ่ง → force forward แบบตาบอด       | block forward (12 มี.ค.)
+----------------------------------+--------------------------------------+--------------------------------
+ROSBridge spam log                | roslibpy reconnect loop ไม่ clean   | Functional แต่น่าเกลียด
+                                  | up หลาย thread พร้อมกัน             | (ยอมรับชั่วคราว)
+----------------------------------+--------------------------------------+--------------------------------
+Audio latency สูง 5–10s           | Whisper buffer รอนาน                | ปรับ silence threshold
+                                  | EOU detection ช้า                   | + chunk size → 2–3s
+----------------------------------+--------------------------------------+--------------------------------
+Camera stream ไม่ถึง Gateway     | USB หลุด / ROSBridge topic           | กำลัง debug
+บางครั้ง                         | ไม่ publish                          | (ยังเกิดบ้าง)
+
+
+----------------------------------------------------------------
+6. Risks & Mitigations (Demo-readiness)
+----------------------------------------------------------------
+
+RISK                             | LEVEL | MITIGATION
+---------------------------------+-------+------------------------------------------
+Camera stream หลุด mid-demo     | HIGH  | Camera Blind Guard → หุ่นไม่ชนผนัง
+                                 |       | แต่ค้นหาไม่สำเร็จ — ต้อง restart
+---------------------------------+-------+------------------------------------------
+LiDAR ยังสลับซ้าย/ขวา          | MED   | LIDAR_MIRROR=1 (default ON)
+                                 |       | ถ้ายังผิด → LIDAR_MIRROR=0 ใน .env
+---------------------------------+-------+------------------------------------------
+LLM latency 8–10s ต่อ step      | MED   | ทดสอบ qwen3:14b (~3–4s)
+                                 |       | ถ้าดีกว่า → deploy แทน gemma3:27b
+---------------------------------+-------+------------------------------------------
+ROSBridge reconnect loop         | MED   | Functional แต่ log spam
+                                 |       | ไม่กระทบ demo — restart ถ้าหนักเกิน
+---------------------------------+-------+------------------------------------------
+Robot stuck (no passable dir)   | MED   | Agent returns "done" + TTS แจ้ง
+                                 |       | หุ่นหยุด safe ไม่ crash
+---------------------------------+-------+------------------------------------------
+Network ขาด Gateway-Server      | HIGH  | ต้องเช็ค Tailscale ก่อน demo เสมอ
+                                 |       | Offline fallback ยังไม่มี
+---------------------------------+-------+------------------------------------------
+Wake word false negative         | LOW   | 15+ Thai variants ครอบสำเนียงแล้ว
+
+Demo Checklist (ก่อน Demo):
+  [ ] เช็ค Tailscale ทั้ง 3 ฝั่ง (Server / Gateway / ...)
+  [ ] บน MyAGV: ros2 topic hz /camera/compressed
+  [ ] ทดสอบ LiDAR direction: บอก "หา [ของ]" ดู log ว่าหันถูกทิศ
+  [ ] Gateway restart ถ้า ROSBridge spam มากเกิน
+  [ ] ตรวจ Ollama service บน Server: ollama list
+
+================================================================
+จัดทำโดย: VORA Team | 13 มีนาคม 2026
+สถาปัตยกรรม: 3-Tier (Robot → Gateway → Server)
+Git: varayuts/vora-project | branch: main | commit: be545b0
+================================================================

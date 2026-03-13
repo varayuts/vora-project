@@ -684,8 +684,7 @@ async def visual_search(
                 lidar_result = _obstacle_avoidance.find_best_direction()
                 lidar_text = _obstacle_avoidance.get_sector_summary()
                 open_dirs_list = lidar_result.get("open_directions", [])
-                if step == 0 or step % 3 == 0:
-                    logger.info(f"📡 LiDAR scan:\n{lidar_text}")
+                logger.info(f"📡 LiDAR scan (step {step+1}, {len(open_dirs_list)} open):\n{lidar_text}")
             
             # ── Safety: block forward/force-forward when camera is dead ──
             camera_blind = stale_count >= 2
@@ -855,6 +854,13 @@ async def visual_search(
             "error": str(e),
         })
     finally:
+        # Safety: always stop the robot when search ends
+        if not MOCK_ROBOT:
+            try:
+                stop_cmd = {"type": "move", "linear_x": 0.0, "angular_z": 0.0, "duration": 0.1}
+                await motion.exec_motion(stop_cmd)
+            except Exception:
+                pass
         _search_active = False
         _search_cancel = False
 
@@ -1260,6 +1266,19 @@ async def _llm_plan_action(
                             angle = open_directions[0]["angle_deg"]
                             reason = "corrected: all open dirs checked, forwarding"
                             logger.warning(f"🔧 LLM turn corrected → forward {angle:+.0f}° (no unchecked left)")
+
+                # ── Post-validate: prevent premature "done" ──
+                if action == "done":
+                    if unchecked_open:
+                        action = "turn"
+                        angle = unchecked_open[0]["angle"]
+                        reason = f"overridden: {len(unchecked_open)} unchecked directions remain"
+                        logger.warning(f"🔧 LLM 'done' overridden → turn {angle:+.0f}° ({len(unchecked_open)} unchecked dirs)")
+                    elif open_directions and move_count < max_moves:
+                        action = "forward"
+                        angle = open_directions[0]["angle_deg"]
+                        reason = f"overridden: forward available ({max_moves - move_count} moves left)"
+                        logger.warning(f"🔧 LLM 'done' overridden → forward {angle:+.0f}° ({max_moves - move_count} moves left)")
 
                 return {"action": action, "angle": angle, "reason": reason}
     except Exception as e:
@@ -2046,6 +2065,11 @@ async def _search_not_found(target: str, total_checks: int):
     """Handle object not found after full search"""
     global _search_active
     _search_active = False
+    
+    # Stop the robot
+    if not MOCK_ROBOT:
+        stop_cmd = {"type": "move", "linear_x": 0.0, "angular_z": 0.0, "duration": 0.1}
+        await motion.exec_motion(stop_cmd)
     
     announce = f"ขออภัยครับ ค้นหา{target}แล้วแต่ยังไม่พบ"
     
