@@ -48,7 +48,7 @@ logger.info(f"🤖 ROSBRIDGE:    {ROSBRIDGE}")
 logger.info(f"🎮 CMD_VEL:      {CMD_VEL}")
 logger.info(f"🐛 DEBUG:        {DEBUG}")
 logger.info(f"🧪 MOCK_ROBOT:   {MOCK_ROBOT}")
-logger.info(f"🧭 USE_NAV2:     {USE_NAV2}")
+logger.info(f"🧭 USE_NAV2:     {USE_NAV2}" + (" ← Nav2 handles forward movement" if USE_NAV2 else " ← Legacy cmd_vel mode"))
 logger.info("═" * 60)
 
 # --- 1. Wake Words Configuration ---
@@ -598,6 +598,75 @@ async def visual_search(
         """Rotate 90° (backward compatible)."""
         await _rotate_deg(90.0)
     
+    async def _nav2_forward(angle_deg: float, distance_m: float) -> bool:
+        """
+        Move forward using Nav2 path planning (lower brain).
+        Converts relative angle + distance to a map-frame goal.
+        Nav2 handles obstacle avoidance, costmap, and recovery.
+        
+        Returns True if navigation succeeded, False if failed/aborted.
+        """
+        if not _nav2_client:
+            return False
+        
+        # Connect Nav2 if needed
+        if not _nav2_client.connected:
+            connected = await _nav2_client.connect()
+            if not connected:
+                logger.warning("🧭 Nav2 connection failed — falling back to legacy")
+                return False
+        
+        # Get current robot pose in map frame
+        rx = _robot_pose.get("x", 0.0)
+        ry = _robot_pose.get("y", 0.0)
+        rtheta = _robot_pose.get("theta", 0.0)  # radians
+        
+        # The robot already rotated to face the desired direction (angle applied before this)
+        # So we just move forward from current heading
+        goal_x = rx + distance_m * math.cos(rtheta)
+        goal_y = ry + distance_m * math.sin(rtheta)
+        
+        logger.info(
+            f"🧭 Nav2 forward: ({rx:.2f},{ry:.2f}) → ({goal_x:.2f},{goal_y:.2f}) "
+            f"dist={distance_m:.2f}m heading={math.degrees(rtheta):.0f}°"
+        )
+        
+        await _broadcast_and_cache({
+            "type": "search_status",
+            "status": "nav2_navigating",
+            "goal": {"x": round(goal_x, 2), "y": round(goal_y, 2)},
+        })
+        
+        def _on_feedback(fb):
+            dist = fb.get("distance_remaining", -1)
+            if dist >= 0:
+                logger.debug(f"  Nav2: {dist:.2f}m remaining")
+        
+        result = await _nav2_client.navigate_to_pose(
+            x=goal_x,
+            y=goal_y,
+            theta=rtheta,
+            timeout=30.0,
+            on_feedback=_on_feedback,
+        )
+        
+        status = result.get("status", "UNKNOWN")
+        duration = result.get("duration", 0)
+        
+        if status == "SUCCEEDED":
+            logger.info(f"✅ Nav2 reached goal in {duration:.1f}s")
+            return True
+        elif status == "ABORTED":
+            logger.warning(f"⚠️ Nav2 aborted (obstacle/unreachable) after {duration:.1f}s")
+            return False
+        elif status == "TIMEOUT":
+            logger.warning(f"⚠️ Nav2 timed out after {duration:.1f}s")
+            await _nav2_client.cancel_navigation()
+            return False
+        else:
+            logger.warning(f"Nav2 status: {status} after {duration:.1f}s")
+            return False
+    
     try:
         # === LiDAR Pre-Scan: understand environment before searching ===
         if not MOCK_ROBOT:
@@ -622,27 +691,14 @@ async def visual_search(
         # Each step: LLM sees LiDAR + VLM history → decides action
         # ════════════════════════════════════════════════════════════
         
-        # Nav2 fast-path
-        if USE_NAV2 and _nav2_client and not MOCK_ROBOT:
-            # ─── Nav2 MODE: Use explore_lite frontiers or random goals ───
-            # _phase2_nav2 returns True if search concluded (found/not-found/cancelled)
-            # Returns False if Nav2 connection failed → fall through to legacy
-            nav2_handled = await _phase2_nav2(
-                target_object=target_object,
-                max_move_cycles=max_move_cycles,
-                vlm_timeout=vlm_timeout,
-                do_vlm_and_check=_do_vlm_and_check,
-                rotate_deg=_rotate_deg,
-                speak=speak_tts,
-                broadcast=_broadcast_and_cache,
-                search_not_found=_search_not_found,
-                search_cancelled=_search_cancelled,
-                total_checks=total_checks,
-            )
-            if nav2_handled:
-                return
+        # Nav2 fast-path (old: separate Nav2-only loop — now DISABLED, we use hybrid mode below)
+        # The hybrid approach: LLM decides direction, Nav2 executes safe path
+        # if USE_NAV2 and _nav2_client and not MOCK_ROBOT:
+        #     ... old _phase2_nav2 code ...
         
         # ─── Agent Loop: LLM+LiDAR driven exploration ───
+        # When USE_NAV2=True: "forward" uses Nav2 for safe path planning (lower brain)
+        # When USE_NAV2=False: "forward" uses direct cmd_vel + LiDAR interrupt (legacy)
         MAX_AGENT_STEPS = 12
         MAX_FORWARD_MOVES = max_move_cycles
         
@@ -780,44 +836,61 @@ async def visual_search(
                 if wall_empty_count >= 3:
                     wall_empty_count = 0
                 
-                # Check clearance before moving
-                if not MOCK_ROBOT:
-                    can_fit, clearance = _obstacle_avoidance.can_robot_fit(0.0)
-                    if not can_fit:
-                        logger.warning(f"🚫 Cannot fit ({clearance}m). Backing up.")
-                        await motion.exec_motion(
-                            {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.5}
-                        )
-                        await asyncio.sleep(0.3)
-                        continue
-                    
-                    obs = await _obstacle_avoidance.check_and_avoid()
-                    if obs and obs.get("obstacle_detected"):
-                        logger.warning(f"🚧 Obstacle at {obs.get('distance', 0):.2f}m!")
-                        await speak_tts("เจอสิ่งกีดขวาง กำลังหลบครับ")
-                        await motion.exec_motion(
-                            {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.0}
-                        )
-                        await _obstacle_avoidance.execute_avoidance(obs.get("strategy", "stop"))
-                        continue
-                
-                logger.info(f"🚶 Moving forward ({forward_move_count}/{MAX_FORWARD_MOVES})...")
-                
-                if not MOCK_ROBOT:
-                    move_cmd = {
-                        "type": "move",
-                        "linear_x": move_speed,
-                        "angular_z": 0.0,
-                        "duration": move_duration,
-                    }
-                    completed = await motion.exec_motion(
-                        move_cmd, obstacle_checker=_lidar_obstacle_check
+                # ══════ Nav2 MODE: safe path planning (lower brain) ══════
+                if USE_NAV2 and _nav2_client and not MOCK_ROBOT:
+                    nav2_ok = await _nav2_forward(
+                        angle_deg=angle,
+                        distance_m=move_speed * move_duration,  # ~0.40m
                     )
-                    if not completed:
-                        logger.warning("🛑 Forward interrupted by LiDAR!")
-                        await speak_tts("ตรวจพบสิ่งกีดขวาง หยุดเดินครับ")
+                    if not nav2_ok:
+                        logger.warning("🧭 Nav2 forward failed — obstacle or unreachable")
+                        await speak_tts("ทางนี้ไปไม่ได้ กำลังหาทางอื่นครับ")
+                        # Don't count as a move — let LLM try another direction
+                        forward_move_count -= 1
+                        continue
+                
+                # ══════ Legacy MODE: direct cmd_vel + LiDAR interrupt ══════
                 else:
-                    await asyncio.sleep(0.5)
+                    # Check clearance before moving
+                    if not MOCK_ROBOT:
+                        can_fit, clearance = _obstacle_avoidance.can_robot_fit(0.0)
+                        if not can_fit:
+                            logger.warning(f"🚫 Cannot fit ({clearance}m). Backing up.")
+                            await motion.exec_motion(
+                                {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.5}
+                            )
+                            await asyncio.sleep(0.3)
+                            forward_move_count -= 1
+                            continue
+                        
+                        obs = await _obstacle_avoidance.check_and_avoid()
+                        if obs and obs.get("obstacle_detected"):
+                            logger.warning(f"🚧 Obstacle at {obs.get('distance', 0):.2f}m!")
+                            await speak_tts("เจอสิ่งกีดขวาง กำลังหลบครับ")
+                            await motion.exec_motion(
+                                {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.0}
+                            )
+                            await _obstacle_avoidance.execute_avoidance(obs.get("strategy", "stop"))
+                            forward_move_count -= 1
+                            continue
+                    
+                    logger.info(f"🚶 Moving forward ({forward_move_count}/{MAX_FORWARD_MOVES})...")
+                    
+                    if not MOCK_ROBOT:
+                        move_cmd = {
+                            "type": "move",
+                            "linear_x": move_speed,
+                            "angular_z": 0.0,
+                            "duration": move_duration,
+                        }
+                        completed = await motion.exec_motion(
+                            move_cmd, obstacle_checker=_lidar_obstacle_check
+                        )
+                        if not completed:
+                            logger.warning("🛑 Forward interrupted by LiDAR!")
+                            await speak_tts("ตรวจพบสิ่งกีดขวาง หยุดเดินครับ")
+                    else:
+                        await asyncio.sleep(0.5)
                 
                 await asyncio.sleep(0.5)
                 
@@ -1193,8 +1266,9 @@ async def _llm_plan_action(
         "1. If UNCHECKED directions exist → turn to the WIDEST one (largest distance = most space to explore).\n"
         "2. If all directions checked → forward to widest open direction to reach a new area.\n"
         "3. If wall streak is high (3+) → PREFER forward even if some directions unchecked.\n"
-        "4. ONLY use angles from the lists below. Do NOT invent angles.\n"
-        "5. If no passable directions and no moves left → done.\n"
+        "4. If a camera view mentions a path, corridor, doorway, or passage → PREFER forward in that direction.\n"
+        "5. ONLY use angles from the lists below. Do NOT invent angles.\n"
+        "6. If no passable directions and no moves left → done.\n"
     )
 
     # ── Scene history from exploration_log ──
@@ -1355,9 +1429,12 @@ async def _vlm_describe_only(timeout: float = 30.0, retry: bool = False) -> str:
 
     try:
         if retry:
-            vlm_prompt = "What do you see? Name each object, its color, and whether it is on the left, center, or right."
+            vlm_prompt = "What do you see? Name each object, its color, and whether it is on the left, center, or right. If there is an open path, corridor, or doorway, mention it."
         else:
-            vlm_prompt = "Describe what you see. List every object with its color and position (left/center/right)."
+            vlm_prompt = (
+                "Describe what you see. List every object with its color and position (left/center/right). "
+                "Also note any open path, corridor, doorway, or passage you can see."
+            )
 
         vlm_url = f"{SERVER_BASE}/vlm/describe-bytes"
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1568,10 +1645,11 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
         # Server-side qwen_vlm.py appends /no_think automatically.
         if retry:
             # Alternate prompt on retry — break echo pattern with a completely different phrasing
-            vlm_prompt = "What do you see? Name each object, its color, and whether it is on the left, center, or right."
+            vlm_prompt = "What do you see? Name each object, its color, and whether it is on the left, center, or right. If there is an open path, corridor, or doorway, mention it."
         else:
             vlm_prompt = (
-                "Describe what you see. List every object with its color and position (left/center/right)."
+                "Describe what you see. List every object with its color and position (left/center/right). "
+                "Also note any open path, corridor, doorway, or passage you can see."
             )
 
         vlm_url = f"{SERVER_BASE}/vlm/describe-bytes"
