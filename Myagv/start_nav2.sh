@@ -72,54 +72,41 @@ echo -e "${BLUE}═════════════════════�
 echo -e "${BLUE}🧭 VORA Nav2 — Mode: ${MODE}${NC}"
 echo -e "${BLUE}══════════════════════════════════════════════════════════${NC}"
 
-# ── TF check ──
-# MyAGV driver (start_myagv.sh) already provides the full TF tree:
-#   odom → base_footprint (EKF) → base_link (URDF)
-#                                → laser_frame (ydlidar static TF)
-#                                → camera_link, imu_link
-# Do NOT add extra TF publishers here — they conflict and create split trees.
-info "Waiting for TF: odom → base_footprint (from myagv driver EKF)..."
-TF_OK=0
-for i in $(seq 1 30); do
-    # tf2_echo in Galactic has no --wait-for-transform flag
-    # Run with a 2s timeout, check if Translation line appears
-    if timeout 2 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -q 'Translation'; then
-        ok "TF odom → base_footprint confirmed (attempt $i)"
-        TF_OK=1
-        break
-    fi
-    warn "TF not ready yet ($i/30)..."
-    sleep 1
-done
-if [[ $TF_OK -eq 0 ]]; then
-    warn "TF odom → base_footprint not found. Trying base_link as fallback..."
-    # Some MyAGV firmware versions use odom → base_link directly
-    if timeout 2 ros2 run tf2_ros tf2_echo odom base_link 2>&1 | grep -q 'Translation'; then
-        ok "TF odom → base_link found — will use base_link as base frame"
-        warn "NOTE: nav2_params.yaml uses base_footprint — update if Nav2 fails"
-        TF_OK=1
-    fi
+# ── TF broadcaster ──
+# myagv_odometry_node has TF broadcast commented out in myAGV.cpp
+# (EKF from myagv_active.launch.py would broadcast it, but that may not be running).
+# We start odom_tf_broadcaster.py to guarantee odom→base_footprint→base_link.
+BROADCASTER="${SCRIPT_DIR}/odom_tf_broadcaster.py"
+if [[ ! -f "$BROADCASTER" ]]; then
+    err "odom_tf_broadcaster.py not found: ${BROADCASTER}"
+    exit 1
 fi
-if [[ $TF_OK -eq 0 ]]; then
-    warn "No TF from odom found — launching odom_tf_broadcaster.py as fallback..."
-    BROADCASTER="${SCRIPT_DIR}/odom_tf_broadcaster.py"
-    if [[ -f "$BROADCASTER" ]]; then
-        python3 "$BROADCASTER" &
-        PIDS+=($!)
-        info "Waiting for odom_tf_broadcaster to publish TF..."
-        for j in $(seq 1 15); do
-            sleep 2
-            if timeout 3 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -q 'Translation'; then
-                ok "TF odom → base_footprint confirmed via odom_tf_broadcaster.py"
-                TF_OK=1
-                break
-            fi
-            warn "Broadcaster TF not visible yet ($j/15)..."
-        done
-    fi
-    if [[ $TF_OK -eq 0 ]]; then
-        err "Still no TF after broadcaster fallback."
-        err "Is start_myagv.sh running? Check: ros2 run tf2_ros tf2_monitor"
+
+# Quick check: is odom→base_footprint already being published? (EKF running)
+# timeout 5 is enough: if TF exists, tf2_echo sees it in < 2s.
+# grep -qm1: quiet, stop at first match so tf2_echo gets SIGPIPE and exits.
+TF_EXISTS=0
+info "Checking if TF odom→base_footprint already exists..."
+if timeout 5 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -qm1 "Translation"; then
+    ok "TF already active (myagv EKF running) — broadcaster not needed"
+    TF_EXISTS=1
+fi
+
+if [[ $TF_EXISTS -eq 0 ]]; then
+    info "Starting odom_tf_broadcaster.py (odom→base_footprint→base_link)..."
+    python3 "$BROADCASTER" &
+    PIDS+=($!)
+    sleep 3  # Essential: wait for broadcaster node init + DDS discovery on Jetson Nano
+
+    # Verify: use 10s timeout — allows tf2_echo to start (~2s) + DDS discovery (~1s)
+    # + first TF message (broadcaster publishes at 10Hz = every 100ms)
+    info "Verifying TF odom→base_footprint..."
+    if timeout 10 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -qm1 "Translation"; then
+        ok "TF odom→base_footprint confirmed"
+    else
+        err "TF not verified after broadcaster started"
+        err "Debug: ros2 run tf2_ros tf2_echo odom base_footprint"
+        err "       ros2 topic echo /odom --once 2>/dev/null | head -5"
         exit 1
     fi
 fi

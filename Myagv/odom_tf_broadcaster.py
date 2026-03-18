@@ -29,7 +29,12 @@ class OdomTFBroadcaster(Node):
             Odometry, "/odom", self._odom_cb, 10
         )
         # Static identity TF: base_footprint → base_link
-        # Nav2 costmaps/sensors may reference base_link
+        # Nav2 costmaps/planners reference base_link; URDF has this joint,
+        # but robot_state_publisher only runs it myagv_active.launch.py is up.
+        # We publish it here as a safe fallback (identity = no physical offset).
+        # NOTE: do NOT publish base_footprint/base_link → laser_frame here.
+        #       ydlidar_launch.py already publishes base_footprint → laser_frame
+        #       (x=0.065, z=0.08, yaw=π). A second source causes TF conflicts.
         self._static_br = StaticTransformBroadcaster(self)
         static_tf_msgs = []
 
@@ -39,16 +44,6 @@ class OdomTFBroadcaster(Node):
         bf_to_bl.child_frame_id = "base_link"
         bf_to_bl.transform.rotation.w = 1.0
         static_tf_msgs.append(bf_to_bl)
-
-        # Static TF: base_link → laser_frame (YDLidar mounted on top)
-        # Only published if ydlidar node doesn't already provide it
-        bl_to_lf = TransformStamped()
-        bl_to_lf.header.stamp = self.get_clock().now().to_msg()
-        bl_to_lf.header.frame_id = "base_link"
-        bl_to_lf.child_frame_id = "laser_frame"
-        bl_to_lf.transform.translation.z = 0.13  # LiDAR ~13cm above base
-        bl_to_lf.transform.rotation.w = 1.0
-        static_tf_msgs.append(bl_to_lf)
 
         self._static_br.sendTransform(static_tf_msgs)
 
