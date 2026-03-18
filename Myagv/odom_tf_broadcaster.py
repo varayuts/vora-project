@@ -3,7 +3,7 @@
 Odom → TF Broadcaster for MyAGV 2023
 =====================================
 Subscribes to /odom (nav_msgs/Odometry) and broadcasts
-the odom → base_link TF transform.
+the odom → base_footprint TF transform.
 
 Needed because myagv_odometry_node publishes /odom topic
 but does NOT broadcast the TF transform that Nav2 requires.
@@ -17,7 +17,7 @@ Usage:
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 from geometry_msgs.msg import TransformStamped
 
 
@@ -28,13 +28,37 @@ class OdomTFBroadcaster(Node):
         self._sub = self.create_subscription(
             Odometry, "/odom", self._odom_cb, 10
         )
-        self.get_logger().info("odom → base_link TF broadcaster started")
+        # Static identity TF: base_footprint → base_link
+        # Nav2 costmaps/sensors may reference base_link
+        self._static_br = StaticTransformBroadcaster(self)
+        static_tf_msgs = []
+
+        bf_to_bl = TransformStamped()
+        bf_to_bl.header.stamp = self.get_clock().now().to_msg()
+        bf_to_bl.header.frame_id = "base_footprint"
+        bf_to_bl.child_frame_id = "base_link"
+        bf_to_bl.transform.rotation.w = 1.0
+        static_tf_msgs.append(bf_to_bl)
+
+        # Static TF: base_link → laser_frame (YDLidar mounted on top)
+        # Only published if ydlidar node doesn't already provide it
+        bl_to_lf = TransformStamped()
+        bl_to_lf.header.stamp = self.get_clock().now().to_msg()
+        bl_to_lf.header.frame_id = "base_link"
+        bl_to_lf.child_frame_id = "laser_frame"
+        bl_to_lf.transform.translation.z = 0.13  # LiDAR ~13cm above base
+        bl_to_lf.transform.rotation.w = 1.0
+        static_tf_msgs.append(bl_to_lf)
+
+        self._static_br.sendTransform(static_tf_msgs)
+
+        self.get_logger().info("odom → base_footprint → base_link TF broadcaster started")
 
     def _odom_cb(self, msg: Odometry):
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
         t.header.frame_id = "odom"
-        t.child_frame_id = "base_link"
+        t.child_frame_id = "base_footprint"
         t.transform.translation.x = msg.pose.pose.position.x
         t.transform.translation.y = msg.pose.pose.position.y
         t.transform.translation.z = msg.pose.pose.position.z

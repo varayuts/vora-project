@@ -101,9 +101,22 @@ if [[ $TF_OK -eq 0 ]]; then
     fi
 fi
 if [[ $TF_OK -eq 0 ]]; then
-    err "No TF from odom to base_footprint or base_link after 30s."
-    err "Is start_myagv.sh running? Check: ros2 run tf2_ros tf2_monitor"
-    exit 1
+    warn "No TF from odom found — launching odom_tf_broadcaster.py as fallback..."
+    BROADCASTER="${SCRIPT_DIR}/odom_tf_broadcaster.py"
+    if [[ -f "$BROADCASTER" ]]; then
+        python3 "$BROADCASTER" &
+        PIDS+=($!)
+        sleep 2
+        if timeout 2 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -q 'Translation'; then
+            ok "TF odom → base_footprint confirmed via odom_tf_broadcaster.py"
+            TF_OK=1
+        fi
+    fi
+    if [[ $TF_OK -eq 0 ]]; then
+        err "Still no TF after broadcaster fallback."
+        err "Is start_myagv.sh running? Check: ros2 run tf2_ros tf2_monitor"
+        exit 1
+    fi
 fi
 
 if [[ "$MODE" == "nav" ]]; then
