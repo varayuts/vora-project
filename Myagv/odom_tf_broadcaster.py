@@ -52,9 +52,35 @@ class OdomTFBroadcaster(Node):
 
         self._static_br.sendTransform(static_tf_msgs)
 
+        # Publish initial odom → base_footprint immediately (identity)
+        # so tf2_echo can see the frame before first /odom arrives
+        init_t = TransformStamped()
+        init_t.header.stamp = self.get_clock().now().to_msg()
+        init_t.header.frame_id = "odom"
+        init_t.child_frame_id = "base_footprint"
+        init_t.transform.rotation.w = 1.0
+        self._br.sendTransform(init_t)
+
+        # Also publish at 10Hz until first /odom arrives
+        self._got_odom = False
+        self._init_timer = self.create_timer(0.1, self._publish_init_tf)
+
         self.get_logger().info("odom → base_footprint → base_link TF broadcaster started")
 
+    def _publish_init_tf(self):
+        """Keep publishing identity TF until real /odom data arrives."""
+        if self._got_odom:
+            self._init_timer.cancel()
+            return
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "odom"
+        t.child_frame_id = "base_footprint"
+        t.transform.rotation.w = 1.0
+        self._br.sendTransform(t)
+
     def _odom_cb(self, msg: Odometry):
+        self._got_odom = True
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
         t.header.frame_id = "odom"

@@ -106,11 +106,16 @@ if [[ $TF_OK -eq 0 ]]; then
     if [[ -f "$BROADCASTER" ]]; then
         python3 "$BROADCASTER" &
         PIDS+=($!)
-        sleep 2
-        if timeout 2 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -q 'Translation'; then
-            ok "TF odom → base_footprint confirmed via odom_tf_broadcaster.py"
-            TF_OK=1
-        fi
+        info "Waiting for odom_tf_broadcaster to publish TF..."
+        for j in $(seq 1 15); do
+            sleep 2
+            if timeout 3 ros2 run tf2_ros tf2_echo odom base_footprint 2>&1 | grep -q 'Translation'; then
+                ok "TF odom → base_footprint confirmed via odom_tf_broadcaster.py"
+                TF_OK=1
+                break
+            fi
+            warn "Broadcaster TF not visible yet ($j/15)..."
+        done
     fi
     if [[ $TF_OK -eq 0 ]]; then
         err "Still no TF after broadcaster fallback."
