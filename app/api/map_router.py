@@ -163,6 +163,19 @@ def _load_map():
 
 # ── Endpoints ─────────────────────────────────────────────────────────
 
+@router.post("/reload")
+async def reload_map():
+    """Force reload map from disk (after saving new SLAM map)."""
+    global _map_png_cache, _map_info, _occupancy_grid
+    _map_png_cache = None
+    _map_info = {}
+    _occupancy_grid = None
+    _load_map()
+    if _map_png_cache:
+        return JSONResponse({"ok": True, "width": _map_info.get("width"), "height": _map_info.get("height")})
+    return JSONResponse({"ok": False, "error": "Map files not found"}, status_code=404)
+
+
 @router.get("/image")
 async def get_map_image():
     """Serve SLAM map as PNG image."""
@@ -171,7 +184,7 @@ async def get_map_image():
     if not _map_png_cache:
         return Response(status_code=404, content="Map not found")
     return Response(content=_map_png_cache, media_type="image/png",
-                    headers={"Cache-Control": "public, max-age=300"})
+                    headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/info")

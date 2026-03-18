@@ -22,7 +22,7 @@ err()   { echo -e "${RED}❌ $1${NC}"; }
 
 # ── Parse args ──
 MODE="nav"   # nav | slam | explore
-MAP_FILE="${SCRIPT_DIR}/maps/new5_map5.yaml"
+MAP_FILE="${SCRIPT_DIR}/maps/lab_room.yaml"
 
 while [[ $# -gt 0 ]]; do
     case $1 in

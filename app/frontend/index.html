@@ -2590,15 +2590,16 @@ let mapInfo = null;        // {width, height, resolution, origin}
 let mapObjects = [];       // [{name, location, ...}]
 let mapImageLoaded = false;
 
-// Load SLAM map image once
-(function loadMapImage() {
+// Load SLAM map image (callable to reload after map update)
+function loadMapImage() {
   const img = new Image();
   img.onload = () => { mapImage = img; mapImageLoaded = true;
     $('map-label').textContent = `Map: ${img.width}×${img.height}`;
   };
   img.onerror = () => { $('map-label').textContent = 'Map not available'; };
-  img.src = '/map/image';
-})();
+  img.src = '/map/image?t=' + Date.now();
+}
+loadMapImage();
 
 // Fetch map state (robot pose + objects) — called every 500ms
 async function fetchMapState() {
