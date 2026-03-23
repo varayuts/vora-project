@@ -24,16 +24,16 @@ amcl:
     laser_max_range: 12.0       # YDLidar G2 max
     laser_min_range: 0.1        # YDLidar G2 min
     laser_model_type: "likelihood_field"
-    max_beams: 60
-    max_particles: 2000         # reduced for Jetson Nano RAM
-    min_particles: 500
+    max_beams: 30
+    max_particles: 500          # reduced for Jetson Nano 4GB RAM
+    min_particles: 100
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
     recovery_alpha_fast: 0.1
     recovery_alpha_slow: 0.001
     resample_interval: 1
-    robot_model_type: "nav2_amcl::OmniMotionModel"  # Mecanum = omnidirectional
+    robot_model_type: "differential"  # apt AMCL 1.0.12 format (stable, no SIGSEGV)
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
@@ -45,6 +45,12 @@ amcl:
     z_rand: 0.5
     z_short: 0.05
     scan_topic: /scan
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: -1.0
+      z: 0.0
+      yaw: 0.0
 
 bt_navigator:
   ros__parameters:
@@ -54,8 +60,10 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
-    # Use simple navigate-to-pose BT (no complex recovery trees)
-    default_bt_xml_filename: ""
+    # This build uses dual navigator plugins (NavigateToPose + NavigateThroughPoses)
+    # default_bt_xml_filename is IGNORED — must use these two params instead:
+    default_nav_to_pose_bt_xml: /opt/ros/galactic/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
+    default_nav_through_poses_bt_xml: /opt/ros/galactic/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_follow_path_action_bt_node

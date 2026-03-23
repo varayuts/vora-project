@@ -10,8 +10,8 @@ class Settings:
     # Main Reasoning LLM (complex tasks, long responses)
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:27b-it-qat")
     
-    # Text Cleaning/Filtering LLM (fast, short responses)
-    OLLAMA_REFINE_MODEL: str = os.getenv("OLLAMA_REFINE_MODEL", "gemma3:12b-it-qat")
+    # Text Cleaning/Filtering LLM (was 12b, merged to 27b to avoid VRAM model swap)
+    OLLAMA_REFINE_MODEL: str = os.getenv("OLLAMA_REFINE_MODEL", "gemma3:27b-it-qat")
     
     # VLM for Vision tasks (navigation, object finding)
     # Qwen3-VL:32B — ~20GB, 256K context, 32 languages, spatial understanding

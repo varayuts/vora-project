@@ -18,7 +18,7 @@ import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Twist
 
 
 class OdomTFBroadcaster(Node):
@@ -62,6 +62,16 @@ class OdomTFBroadcaster(Node):
 
         self.get_logger().info("odom → base_footprint → base_link TF broadcaster started")
 
+        # cmd_vel safety watchdog: sends zero if no cmd_vel for >1s
+        self._cmd_vel_sub = self.create_subscription(
+            Twist, "/cmd_vel", self._cmd_vel_cb, 10
+        )
+        self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._last_cmd_vel_time = self.get_clock().now()
+        self._cmd_vel_active = False
+        self._stop_logged = False  # prevent repeated STOP logs
+        self._watchdog_timer = self.create_timer(0.5, self._watchdog_cb)
+
     def _publish_init_tf(self):
         """Keep publishing identity TF until real /odom data arrives."""
         if self._got_odom:
@@ -73,6 +83,26 @@ class OdomTFBroadcaster(Node):
         t.child_frame_id = "base_footprint"
         t.transform.rotation.w = 1.0
         self._br.sendTransform(t)
+
+    def _cmd_vel_cb(self, msg: Twist):
+        # Only track significant motion to avoid feedback loops and noise
+        # Threshold 0.05 filters out tiny drift/noise from controllers
+        speed = abs(msg.linear.x) + abs(msg.linear.y) + abs(msg.angular.z)
+        if speed > 0.05:
+            self._last_cmd_vel_time = self.get_clock().now()
+            self._cmd_vel_active = True
+            self._stop_logged = False  # new real motion, allow logging again
+
+    def _watchdog_cb(self):
+        if not self._cmd_vel_active:
+            return
+        elapsed = (self.get_clock().now() - self._last_cmd_vel_time).nanoseconds / 1e9
+        if elapsed > 1.0:
+            self._cmd_vel_pub.publish(Twist())
+            self._cmd_vel_active = False
+            if not self._stop_logged:
+                self.get_logger().warn("cmd_vel watchdog: motion stopped -> sending STOP")
+                self._stop_logged = True
 
     def _odom_cb(self, msg: Odometry):
         self._got_odom = True

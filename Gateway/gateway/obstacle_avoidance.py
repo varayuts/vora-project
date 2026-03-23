@@ -65,10 +65,10 @@ _lidar_offset_deg = float(os.getenv("LIDAR_OFFSET_DEG", "0"))
 LIDAR_ANGLE_OFFSET_RAD = math.radians(_lidar_offset_deg)
 
 # ── LiDAR Left/Right Mirror ───────────────────────────────────────────
-# If the LiDAR scan direction (CW vs CCW) doesn't match ROS standard,
-# left and right will be swapped.  LIDAR_MIRROR=1 negates the angle to
-# correct this.  Symptom: robot consistently turns toward walls when LLM
-# picks the "open" direction.
+# YDLidar G2 on Elephant MyAGV: LIDAR_MIRROR=1 (default ON).
+# With MIRROR=ON  → forward clearance after turning matches sector prediction.
+# With MIRROR=OFF → robot turns toward walls (verified 23-Mar-2026).
+# Override via LIDAR_MIRROR env var if needed.
 LIDAR_MIRROR = os.getenv("LIDAR_MIRROR", "1") == "1"
 
 
@@ -104,6 +104,7 @@ class ObstacleAvoidance:
         # Sector analysis cache (updated every _on_scan)
         self._sector_distances = [float('inf')] * NUM_SECTORS  # avg dist per sector
         self._sector_min_distances = [float('inf')] * NUM_SECTORS  # min dist per sector
+        self._scan_diag_logged = False  # one-time diagnostic logging
         
     async def start(self, ros_connection):
         """Start listening to LiDAR scan topic."""
@@ -117,8 +118,7 @@ class ObstacleAvoidance:
             self._scan_sub.subscribe(self._on_scan)
             logger.info(f"✅ Obstacle avoidance started (LiDAR: {SCAN_TOPIC})")
             logger.info(f"   Warning: {OBSTACLE_WARN_M}m | Stop: {OBSTACLE_STOP_M}m | Cone: ±{FRONT_ANGLE_DEG//2}°")
-            if LIDAR_MIRROR:
-                logger.info(f"   🔀 LIDAR_MIRROR=ON (L/R flipped to match physical layout)")
+            logger.info(f"   🔀 LIDAR_MIRROR={'ON' if LIDAR_MIRROR else 'OFF'}")
         except Exception as e:
             logger.error(f"❌ Failed to subscribe to {SCAN_TOPIC}: {e}")
     
@@ -159,6 +159,19 @@ class ObstacleAvoidance:
         
         if not ranges:
             return
+        
+        # One-time diagnostic: log raw scan parameters for debugging angle mapping
+        if not self._scan_diag_logged:
+            self._scan_diag_logged = True
+            n = len(ranges)
+            angle_max = angle_min + (n - 1) * angle_increment
+            logger.info(
+                f"📐 LiDAR DIAG: {n} rays, angle_min={math.degrees(angle_min):.1f}°, "
+                f"angle_max={math.degrees(angle_max):.1f}°, "
+                f"increment={math.degrees(angle_increment):.3f}°, "
+                f"MIRROR={'ON' if LIDAR_MIRROR else 'OFF'}, "
+                f"OFFSET={math.degrees(LIDAR_ANGLE_OFFSET_RAD):.1f}°"
+            )
         
         self._last_scan_ranges = ranges
         self._last_angle_min = angle_min
@@ -340,6 +353,43 @@ class ObstacleAvoidance:
         
         min_clearance = min(front_dist, side_clearance)
         return passable, round(min_clearance, 3)
+    
+    def get_forward_clearance(self) -> float:
+        """
+        Forward clearance using nearest non-dead-zone rays.
+        
+        YDLidar G2 has ~30° dead zone at front (±15° where motor is).
+        Sector 0 (+15°) is DEAD, so can_robot_fit(0.0) returns side clearance
+        instead of front clearance — causing false "blocked" readings.
+        
+        This method checks individual rays from ±16° to ±60° as the best
+        available proxy for what's ahead of the robot.
+        Returns minimum distance, or float('inf') if no valid readings.
+        """
+        if not self._last_scan_ranges:
+            return float('inf')
+        
+        min_dist = float('inf')
+        check_lo = math.radians(16)   # just past dead zone edge
+        check_hi = math.radians(60)   # up to 60° on each side
+        
+        for i, r in enumerate(self._last_scan_ranges):
+            if not (self._last_range_min <= r <= self._last_range_max):
+                continue
+            raw_angle = self._last_angle_min + i * self._last_angle_increment
+            angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+            if LIDAR_MIRROR:
+                angle = -angle
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+            
+            abs_angle = abs(angle)
+            if check_lo <= abs_angle <= check_hi:
+                min_dist = min(min_dist, r)
+        
+        return min_dist
     
     def get_sector_summary(self) -> str:
         """Human-readable summary of 360° LiDAR for logging."""

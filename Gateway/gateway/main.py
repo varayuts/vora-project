@@ -251,13 +251,64 @@ async def cancel_search():
         _search_cancel = True
         logger.info("🛑 Visual search cancel requested")
 
+
+async def _llm_enrich_search_query(raw_query: str) -> str:
+    """
+    🧠 LLM-based query enrichment for detailed search commands.
+    
+    When the user says something complex like:
+        "หาขวดน้ำ Avias รูปนกบนสีขาวบนฉลาก อยู่ทางขวา"
+    
+    Regex strips detail → just "ขวดน้ำ". But LLM extracts structured info:
+        "water bottle, Avias brand, white label with bird logo, likely on the right"
+    
+    This enriched query goes to VLM reasoning for much better matching.
+    
+    Falls back to raw_query if LLM fails or times out.
+    """
+    try:
+        system = (
+            "You are a search query parser for a robot assistant. "
+            "Extract structured information from the user's Thai search command. "
+            "Output a concise English search description (max 60 words) that a vision model can use to identify the object. "
+            "Include: object type, brand/name, color, distinctive visual features, and direction/location hints. "
+            "RESPOND WITH ONLY THE DESCRIPTION, no JSON, no explanation."
+        )
+        prompt = (
+            f"User command: \"{raw_query}\"\n\n"
+            f"Extract a concise English visual description for the robot's camera to find this object:"
+        )
+        
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+            resp = await client.post(f"{SERVER_BASE}/generate", json={
+                "prompt": prompt,
+                "system": system,
+                "temperature": 0.2,
+                "max_tokens": 100,
+            })
+        
+        if resp.status_code == 200:
+            enriched = resp.json().get("response", "").strip()
+            # Sanity check: must be non-empty and not too long
+            if enriched and 5 < len(enriched) < 300:
+                logger.info(f"🧠 LLM enriched query: '{raw_query}' → '{enriched[:100]}'")
+                return enriched
+            else:
+                logger.warning(f"⚠️ LLM enrichment returned invalid result: '{enriched[:80]}'")
+    except Exception as e:
+        logger.warning(f"⚠️ LLM enrichment failed ({e}) — using original query")
+    
+    return raw_query
+
+
 async def visual_search(
     target_object: str,
     max_move_cycles: int = 4,            # max move-then-scan cycles
-    move_duration: float = 4.0,          # seconds to move forward per step (~0.40m)
-    move_speed: float = 0.10,            # m/s (slow and safe)
-    vlm_timeout: float = 60.0,           # seconds for VLM call
+    move_duration: float = 2.7,          # seconds to move forward per step (~0.40m at 0.15 m/s)
+    move_speed: float = 0.15,            # m/s (increased from 0.10 — still safe with LiDAR check every 0.1s)
+    vlm_timeout: float = 180.0,          # seconds for VLM call (Qwen3-VL:32B needs 60-150s)
     scan_directions: int = 4,            # 4 directions = 360° (90° × 4)
+    display_name: str = "",              # Thai-friendly name for TTS/UI (target_object used for VLM)
 ):
     """
     🔍 Visual Search — Rotate-Scan-First Strategy
@@ -279,6 +330,12 @@ async def visual_search(
     _search_active = True
     _search_cancel = False
     
+    # Display name for TTS/UI — use original Thai target, not enriched English
+    _display = display_name or target_object
+    
+    # Set cancel checker on motion publisher so it can interrupt mid-motion
+    motion._cancel_checker = lambda: _search_cancel
+    
     total_checks = 0
     import math
     SCAN_ROTATION_CAL = 0.95  # Increased from 0.87 — was undershooting 10-20°
@@ -291,7 +348,7 @@ async def visual_search(
     logger.info(f"═" * 50)
     
     # Normalize target name to official item if possible
-    normalized_target = normalize_search_target(target_object)
+    normalized_target = normalize_search_target(_display)
     
     # Check memory for previous location
     memory_hint = object_memory.get_search_hint(normalized_target)
@@ -310,7 +367,7 @@ async def visual_search(
     if spatial_summary:
         logger.info(f"🧠 Spatial memory: {len(spatial_summary.splitlines())} past observations")
     
-    colocation_context = spatial_memory.build_colocation_context(target_object, max_age_min=60)
+    colocation_context = spatial_memory.build_colocation_context(_display, max_age_min=60)
     if colocation_context:
         logger.info(f"📌 Co-location hints:\n{colocation_context}")
     
@@ -353,14 +410,14 @@ async def visual_search(
     await _broadcast_and_cache({
         "type": "search_status",
         "status": "started",
-        "target": target_object,
+        "target": _display,
         "normalized_target": normalized_target,
         "memory_hint": memory_hint,
         "colocation_hint": colocation_llm_hint,
     })
     
     # 🔊 TTS: Announce search start + memory hint
-    announce = f"กำลังค้นหา {target_object} ครับ"
+    announce = f"กำลังค้นหา {_display} ครับ"
     if memory_hint:
         announce += f" {memory_hint}"
     elif colocation_llm_hint:
@@ -407,15 +464,15 @@ async def visual_search(
                 total_checks += 1  # count it but don't waste VLM time
                 return False
         
-        found, location, description, _conf = await _vlm_check(target_object, vlm_timeout)
+        found, location, description, _conf, _reason = await _vlm_check(target_object, vlm_timeout)
         total_checks += 1
         
-        # ── Auto-retry once on prompt_echo with alternate prompt ──
+        # ── Auto-retry once on prompt_echo or target_parrot with alternate prompt ──
         is_rejected = description.startswith("__REJECTED__:") if description else False
-        if is_rejected and "prompt_echo" in description:
-            logger.info(f"🔄 [{phase_label}] Prompt echo — retrying VLM with alternate prompt...")
+        if is_rejected and ("prompt_echo" in description or "target_parrot" in description):
+            logger.info(f"🔄 [{phase_label}] VLM echoed/parroted — retrying with alternate prompt...")
             await asyncio.sleep(0.5)  # brief pause before retry
-            found, location, description, _conf = await _vlm_check(target_object, vlm_timeout, retry=True)
+            found, location, description, _conf, _reason = await _vlm_check(target_object, vlm_timeout, retry=True)
             total_checks += 1
             is_rejected = description.startswith("__REJECTED__:") if description else False
         
@@ -431,7 +488,7 @@ async def visual_search(
             if stale_count >= 8:
                 logger.error(f"🛑 Aborting search: {stale_count} consecutive NO DATA from camera/VLM")
                 await speak_tts("กล้องขัดข้อง ไม่สามารถค้นหาต่อได้ครับ")
-                await _search_not_found(target_object, total_checks)
+                await _search_not_found(_display, total_checks)
                 return True
         elif is_rejected:
             # VLM produced output but quality gate rejected it — VLM is working, just unreliable
@@ -444,9 +501,9 @@ async def visual_search(
             
             # Prompt echoes indicate uninformative scene (model echoes when it sees a wall/blank).
             # Count these toward wall_empty_count so the wall-guard can activate.
-            if reject_reason == "prompt_echo" or reject_reason == "too_short":
+            if reject_reason == "prompt_echo" or reject_reason == "too_short" or reject_reason == "target_parrot":
                 wall_empty_count += 1
-                logger.info(f"🧱 Prompt echo/short → treating as wall/empty scene #{wall_empty_count}")
+                logger.info(f"🧱 Prompt echo/short/parrot → treating as wall/empty scene #{wall_empty_count}")
             
             # After many rejections, lower the quality gate temporarily
             if vlm_reject_count >= 6:
@@ -484,17 +541,21 @@ async def visual_search(
                 theta=_robot_pose.get("theta", 0.0),
                 description=effective_desc,
                 phase=phase_label,
-                search_target=target_object,
+                search_target=_display,
             )
         
         # Broadcast progress
         _broadcast_data = {
             "type": "search_status",
             "status": "scanning",
-            "target": target_object,
+            "target": _display,
             "phase": phase_label,
             "total_checks": total_checks,
             "description": (effective_desc[:500] if effective_desc else ""),
+            "vlm_scene": (effective_desc[:800] if effective_desc and not is_rejected else ""),
+            "llm_reason": (_reason or ""),
+            "llm_found": found,
+            "llm_confidence": _conf,
         }
         if broadcast_extra:
             _broadcast_data.update(broadcast_extra)
@@ -510,7 +571,7 @@ async def visual_search(
             if consecutive_found < 2:
                 logger.info("🔁 Confirming detection — re-checking same angle...")
                 await asyncio.sleep(0.5)  # let camera settle
-                found2, loc2, desc2, _conf2 = await _vlm_check(target_object, vlm_timeout)
+                found2, loc2, desc2, _conf2, _reason2 = await _vlm_check(target_object, vlm_timeout)
                 total_checks += 1
                 if found2:
                     consecutive_found += 1
@@ -524,7 +585,7 @@ async def visual_search(
             
             if consecutive_found >= 2:
                 logger.info(f"🎉 CONFIRMED: Object found! ({phase_label}) Location: {location}")
-                await _search_found(target_object, location, description)
+                await _search_found(_display, location, description)
                 return True
         else:
             consecutive_found = 0  # reset confirmation chain
@@ -558,13 +619,13 @@ async def visual_search(
                 await asyncio.sleep(0.5)
                 
                 # Re-check with VLM after approaching
-                found_retry, loc_retry, desc_retry, conf_retry = await _vlm_check(target_object, vlm_timeout)
+                found_retry, loc_retry, desc_retry, conf_retry, _reason_retry = await _vlm_check(target_object, vlm_timeout)
                 total_checks += 1
                 
                 if found_retry and conf_retry >= 0.7:
                     consecutive_found = 2  # bypass confirmation gate — we just approached + confirmed
                     logger.info(f"🎉 PARTIAL→CONFIRMED! conf={conf_retry:.2f} at '{loc_retry}' after approach")
-                    await _search_found(target_object, loc_retry, desc_retry)
+                    await _search_found(_display, loc_retry, desc_retry)
                     return True
                 elif conf_retry >= 0.3:
                     # Still partial — log but don't approach again immediately
@@ -682,7 +743,7 @@ async def visual_search(
         if await _do_vlm_and_check("phase0_current"):
             return
         if _search_cancel:
-            await _search_cancelled(target_object)
+            await _search_cancelled(_display)
             return
         
         # ════════════════════════════════════════════════════════════
@@ -712,6 +773,7 @@ async def visual_search(
         cumulative_rotation = 0.0   # heading relative to search start (degrees)
         forward_move_count = 0
         turns_at_position = 0  # turns since last forward move — force forward after 4
+        consecutive_blocked = 0  # front blocked counter — turn away after 2
         
         # Record Phase 0 observation
         if exploration_log:
@@ -722,7 +784,7 @@ async def visual_search(
         
         for step in range(MAX_AGENT_STEPS):
             if _search_cancel:
-                await _search_cancelled(target_object)
+                await _search_cancelled(_display)
                 return
             
             # Perception warning after a few steps
@@ -736,11 +798,17 @@ async def visual_search(
             # ── Fresh LiDAR scan ──
             lidar_text = ""
             open_dirs_list = []
+            blocked_dirs = []
             if not MOCK_ROBOT:
                 lidar_result = _obstacle_avoidance.find_best_direction()
                 lidar_text = _obstacle_avoidance.get_sector_summary()
                 open_dirs_list = lidar_result.get("open_directions", [])
-                logger.info(f"📡 LiDAR scan (step {step+1}, {len(open_dirs_list)} open):\n{lidar_text}")
+                # Extract blocked directions for LLM safety input
+                for sec in lidar_result.get("all_sectors", []):
+                    md = sec.get("min_dist_m")
+                    if md is not None and md < 0.30:
+                        blocked_dirs.append({"angle": sec["angle_deg"], "dist": md})
+                logger.info(f"📡 LiDAR scan (step {step+1}, {len(open_dirs_list)} open, {len(blocked_dirs)} blocked):\n{lidar_text}")
             
             # ── Safety: block forward/force-forward when camera is dead ──
             camera_blind = stale_count >= 2
@@ -758,6 +826,9 @@ async def visual_search(
                 else:
                     plan = {"action": "done", "angle": 0, "reason": f"stuck: {turns_at_position} turns, no open direction"}
             else:
+                if _search_cancel:
+                    await _search_cancelled(_display)
+                    return
                 # ── LLM decides next action ──
                 plan = await _llm_plan_action(
                     target=target_object,
@@ -772,6 +843,7 @@ async def visual_search(
                     exploration_log=exploration_log,
                     wall_streak=wall_empty_count if not camera_blind else 0,
                     turns_at_position=turns_at_position,
+                    blocked_dirs=blocked_dirs,
                 )
             
             action = plan.get("action", "done")
@@ -793,6 +865,9 @@ async def visual_search(
                     cumulative_rotation += angle
                 
                 label = f"agent_s{step + 1}_t{angle:+.0f}"
+                if _search_cancel:
+                    await _search_cancelled(_display)
+                    return
                 if await _do_vlm_and_check(label, force=True, broadcast_extra={
                     "step": step + 1,
                     "max_steps": MAX_AGENT_STEPS,
@@ -800,6 +875,9 @@ async def visual_search(
                     "angle": angle,
                     "reason": reason,
                 }):
+                    return
+                if _search_cancel:
+                    await _search_cancelled(_display)
                     return
                 
                 desc = exploration_log[-1]["desc"][:150] if exploration_log else ""
@@ -836,31 +914,48 @@ async def visual_search(
                 if wall_empty_count >= 3:
                     wall_empty_count = 0
                 
-                # ══════ Nav2 MODE: safe path planning (lower brain) ══════
+                # ══════ Try Nav2 first, fall back to legacy cmd_vel ══════
+                _nav2_moved = False
                 if USE_NAV2 and _nav2_client and not MOCK_ROBOT:
-                    nav2_ok = await _nav2_forward(
+                    _nav2_moved = await _nav2_forward(
                         angle_deg=angle,
                         distance_m=move_speed * move_duration,  # ~0.40m
                     )
-                    if not nav2_ok:
-                        logger.warning("🧭 Nav2 forward failed — obstacle or unreachable")
-                        await speak_tts("ทางนี้ไปไม่ได้ กำลังหาทางอื่นครับ")
-                        # Don't count as a move — let LLM try another direction
-                        forward_move_count -= 1
-                        continue
+                    if not _nav2_moved:
+                        logger.warning("🧭 Nav2 forward failed — falling back to legacy cmd_vel")
                 
                 # ══════ Legacy MODE: direct cmd_vel + LiDAR interrupt ══════
-                else:
-                    # Check clearance before moving
+                if not _nav2_moved:
+                    # Check clearance AFTER rotation using non-dead-zone rays (±16°~60°)
+                    # can_robot_fit(0.0) is broken: sector 0 is in the dead zone, so it
+                    # returns side clearance instead of front clearance.
                     if not MOCK_ROBOT:
-                        can_fit, clearance = _obstacle_avoidance.can_robot_fit(0.0)
-                        if not can_fit:
-                            logger.warning(f"🚫 Cannot fit ({clearance}m). Backing up.")
-                            await motion.exec_motion(
-                                {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.5}
+                        await asyncio.sleep(0.3)  # let LiDAR update after rotation
+                        clearance = _obstacle_avoidance.get_forward_clearance()
+                        logger.info(f"🧭 Post-rotation front clearance: {clearance:.2f}m (±16°-60° rays)")
+                        
+                        # Minimum clearance guard: don't ram walls
+                        MIN_FWD_CLEARANCE = 0.20  # 20cm absolute minimum
+                        if clearance < MIN_FWD_CLEARANCE:
+                            logger.warning(
+                                f"⛔ Front blocked: {clearance:.2f}m < {MIN_FWD_CLEARANCE}m! "
+                                f"Turning to open direction."
                             )
-                            await asyncio.sleep(0.3)
                             forward_move_count -= 1
+                            consecutive_blocked += 1
+                            # Turn to best open direction instead of dead-looping
+                            if open_dirs_list:
+                                _best_open = open_dirs_list[0]
+                                _turn_angle = _best_open["angle_deg"]
+                                logger.info(f"🔄 Blocked → turning {_turn_angle:+.0f}° to open space ({_best_open.get('avg_dist_m', 0):.1f}m)")
+                                await _rotate_deg(_turn_angle)
+                                cumulative_rotation += _turn_angle
+                                turns_at_position += 1
+                            else:
+                                logger.warning("⚠️ No open direction found — all blocked!")
+                            if consecutive_blocked >= 3:
+                                logger.warning(f"🚧 Blocked {consecutive_blocked}x — robot is trapped, breaking forward loop")
+                                break
                             continue
                         
                         obs = await _obstacle_avoidance.check_and_avoid()
@@ -873,15 +968,32 @@ async def visual_search(
                             await _obstacle_avoidance.execute_avoidance(obs.get("strategy", "stop"))
                             forward_move_count -= 1
                             continue
+                        
+                        # Limit forward distance to clearance minus safety margin
+                        safety_margin = 0.15  # 15cm buffer from walls
+                        max_safe_distance = max(0.0, clearance - safety_margin)
+                        commanded_distance = move_speed * move_duration  # normally 0.40m
+                        if max_safe_distance < commanded_distance:
+                            safe_duration = max(0.5, max_safe_distance / move_speed)
+                            logger.info(f"📏 Limiting forward: {clearance:.2f}m clearance → {max_safe_distance:.2f}m safe → {safe_duration:.1f}s")
+                        else:
+                            safe_duration = move_duration
+                    else:
+                        safe_duration = move_duration
                     
                     logger.info(f"🚶 Moving forward ({forward_move_count}/{MAX_FORWARD_MOVES})...")
+                    consecutive_blocked = 0  # reset — we got past the clearance check
                     
                     if not MOCK_ROBOT:
+                        # Record pose before moving for stuck detection
+                        _pre_x = _robot_pose.get("x", 0.0)
+                        _pre_y = _robot_pose.get("y", 0.0)
+                        
                         move_cmd = {
                             "type": "move",
                             "linear_x": move_speed,
                             "angular_z": 0.0,
-                            "duration": move_duration,
+                            "duration": safe_duration,
                         }
                         completed = await motion.exec_motion(
                             move_cmd, obstacle_checker=_lidar_obstacle_check
@@ -889,10 +1001,44 @@ async def visual_search(
                         if not completed:
                             logger.warning("🛑 Forward interrupted by LiDAR!")
                             await speak_tts("ตรวจพบสิ่งกีดขวาง หยุดเดินครับ")
+                        
+                        # Stuck detection: if odom didn't change after forward command,
+                        # robot is stuck (wheels spinning but not moving)
+                        await asyncio.sleep(0.3)  # let odom update
+                        _post_x = _robot_pose.get("x", 0.0)
+                        _post_y = _robot_pose.get("y", 0.0)
+                        _moved_dist = math.sqrt((_post_x - _pre_x)**2 + (_post_y - _pre_y)**2)
+                        _expected_dist = move_speed * safe_duration * 0.3  # at least 30% of expected
+                        if completed and _moved_dist < _expected_dist and _expected_dist > 0.05:
+                            logger.warning(
+                                f"🚨 STUCK DETECTED: moved {_moved_dist:.3f}m but expected ≥{_expected_dist:.3f}m. "
+                                f"Auto-reversing..."
+                            )
+                            await motion.exec_motion(
+                                {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.5}
+                            )
+                            await asyncio.sleep(0.3)
+                            forward_move_count -= 1  # don't count stuck move
+                            consecutive_blocked += 1
+                            # After stuck, turn to open direction to escape
+                            if open_dirs_list:
+                                _escape_angle = open_dirs_list[0]["angle_deg"]
+                                logger.info(f"🔄 Stuck → turning {_escape_angle:+.0f}° to escape")
+                                await _rotate_deg(_escape_angle)
+                                cumulative_rotation += _escape_angle
+                                turns_at_position += 1
+                            if consecutive_blocked >= 3:
+                                logger.warning(f"🚧 Stuck/blocked {consecutive_blocked}x — robot is trapped")
+                                break
+                            continue
                     else:
                         await asyncio.sleep(0.5)
                 
                 await asyncio.sleep(0.5)
+                
+                if _search_cancel:
+                    await _search_cancelled(_display)
+                    return
                 
                 # VLM check at new position
                 if await _do_vlm_and_check(f"agent_mv{forward_move_count}_fwd", force=True, broadcast_extra={
@@ -902,6 +1048,9 @@ async def visual_search(
                     "angle": angle,
                     "reason": reason,
                 }):
+                    return
+                if _search_cancel:
+                    await _search_cancelled(_display)
                     return
                 
                 # New position → reset checked directions
@@ -916,14 +1065,14 @@ async def visual_search(
         
         # === Not found ===
         logger.warning(f"😔 Object '{target_object}' not found after {total_checks} VLM checks")
-        await _search_not_found(target_object, total_checks)
+        await _search_not_found(_display, total_checks)
         
     except Exception as e:
         logger.error(f"❌ Visual search error: {e}")
         await _broadcast_and_cache({
             "type": "search_status",
             "status": "error",
-            "target": target_object,
+            "target": _display,
             "error": str(e),
         })
     finally:
@@ -936,6 +1085,7 @@ async def visual_search(
                 pass
         _search_active = False
         _search_cancel = False
+        motion._cancel_checker = None
 
 
 async def _phase2_nav2(
@@ -1205,16 +1355,21 @@ async def _llm_plan_action(
     exploration_log: list,
     wall_streak: int = 0,
     turns_at_position: int = 0,
+    blocked_dirs: list = None,
 ) -> dict:
     """
     🧠 LLM Agent Brain: decide next action for visual search.
 
-    Replaces fixed Phase 1→1.5→2 with intelligent per-step decisions.
-    LLM sees pre-filtered open directions + VLM history → picks action.
-    Raw LiDAR table is NOT shown (LLM misinterprets ❌/✅ symbols).
+    VLM-PRIMARY approach: camera scene descriptions drive direction choice.
+    LiDAR is used ONLY for safety (blocked directions < 0.3m).
+    The YDLidar G2 has a 30° front dead zone — LiDAR distances cannot
+    reliably predict forward drivability after rotation.
 
     Returns {"action": "turn"|"forward"|"done", "angle": float, "reason": str}
     """
+    if blocked_dirs is None:
+        blocked_dirs = []
+
     # ── Build checked/unchecked context ──
     checked_abs_angles = set()
     checked_text_lines = []
@@ -1224,7 +1379,7 @@ async def _llm_plan_action(
         checked_abs_angles.add(round(cd["angle_abs"]))
     checked_text = "\n".join(checked_text_lines) if checked_text_lines else "  (none yet)"
 
-    # Build unchecked open directions list (sorted by distance, widest first)
+    # Build unchecked open directions list
     unchecked_open = []
     for od in open_directions:
         lidar_angle = od["angle_deg"]
@@ -1234,24 +1389,38 @@ async def _llm_plan_action(
             for ca in checked_abs_angles
         )
         if not already:
-            dist = od.get("avg_dist_m")
-            dist_val = dist if isinstance(dist, (int, float)) and dist else 0
-            unchecked_open.append({"angle": lidar_angle, "dist": dist_val})
-    unchecked_open.sort(key=lambda x: x["dist"], reverse=True)  # widest first
+            unchecked_open.append({"angle": lidar_angle})
+    # Don't sort by distance — LiDAR distance is unreliable for direction choice
 
     if unchecked_open:
-        unchecked_lines = []
-        for i, u in enumerate(unchecked_open):
-            tag = " ← widest" if i == 0 else ""
-            unchecked_lines.append(f"  {u['angle']:+.0f}° ({u['dist']:.1f}m){tag}")
+        unchecked_lines = [f"  {u['angle']:+.0f}°" for u in unchecked_open]
         unchecked_text = "\n".join(unchecked_lines)
     else:
         unchecked_text = "  (none — all directions checked)"
 
-    # Build forward options (all open directions for forward move)
+    # ── Camera scene observations (PRIMARY navigation input) ──
+    camera_text = ""
+    if checked_dirs:
+        camera_lines = []
+        for cd in checked_dirs[-5:]:
+            rel = ((cd["angle_abs"] - cumulative_rotation + 180) % 360) - 180
+            desc = cd["desc"][:120]
+            camera_lines.append(f"  [facing {rel:+.0f}°] \"{desc}\"")
+        camera_text = "\n".join(camera_lines)
+    if not camera_text:
+        camera_text = "  (no observations yet)"
+
+    # ── Blocked directions from LiDAR (safety only) ──
+    if blocked_dirs:
+        blocked_lines = [f"  {bd['angle']:+.0f}° ({bd['dist']:.2f}m)" for bd in blocked_dirs]
+        blocked_text = "\n".join(blocked_lines)
+    else:
+        blocked_text = "  (none blocked)"
+
+    # Available angles for forward move
     if open_directions:
-        best_fwd = open_directions[0]  # already sorted by score
-        forward_hint = f"Best forward direction: {best_fwd['angle_deg']:+.0f}° ({best_fwd.get('avg_dist_m', 0):.1f}m)"
+        fwd_angles = ", ".join(f"{od['angle_deg']:+.0f}°" for od in open_directions[:5])
+        forward_hint = f"Available forward directions: {fwd_angles}"
     else:
         forward_hint = "No passable forward direction"
 
@@ -1263,42 +1432,37 @@ async def _llm_plan_action(
         "- forward: Move to a new area. angle = turn before moving (0=straight). Use when current area explored.\n"
         "- done: No passable directions left.\n\n"
         "DECISION RULES (follow strictly in order):\n"
-        "1. If UNCHECKED directions exist → turn to the WIDEST one (largest distance = most space to explore).\n"
-        "2. If all directions checked → forward to widest open direction to reach a new area.\n"
-        "3. If wall streak is high (3+) → PREFER forward even if some directions unchecked.\n"
-        "4. If a camera view mentions a path, corridor, doorway, or passage → PREFER forward in that direction.\n"
-        "5. ONLY use angles from the lists below. Do NOT invent angles.\n"
-        "6. If no passable directions and no moves left → done.\n"
+        "1. PRIMARY: Use CAMERA SCENE descriptions to choose direction.\n"
+        "   - If camera sees open space, corridor, hallway, or doorway → prefer that direction.\n"
+        "   - Camera 'left' ≈ +45° to +90°. Camera 'right' ≈ -45° to -90°. Camera 'ahead' ≈ 0°.\n"
+        "2. If UNCHECKED directions exist → turn to check them. Prefer ones near camera-observed openings.\n"
+        "3. If wall streak is high (3+) → PREFER forward to escape the dead-end area.\n"
+        "4. For forward: choose direction where camera SHOWED open space, corridor, or doorway.\n"
+        "5. SAFETY: Do NOT choose directions in the BLOCKED list (confirmed wall < 0.3m).\n"
+        "6. ONLY use angles from the UNCHECKED or forward directions lists. Do NOT invent angles.\n"
+        "7. If no passable directions and no moves left → done.\n"
     )
-
-    # ── Scene history from exploration_log ──
-    scene_history = ""
-    if exploration_log:
-        recent_scenes = exploration_log[-5:]
-        scene_lines = []
-        for i, entry in enumerate(recent_scenes):
-            desc = entry.get("desc", "")[:80]
-            scene_lines.append(f"  [{i+1}] \"{desc}\"")
-        scene_history = "\nRECENT CAMERA VIEWS:\n" + "\n".join(scene_lines) + "\n"
 
     # ── Wall streak warning ──
     wall_warning = ""
     if wall_streak >= 2:
-        wall_warning = f"\n⚠️ WALL STREAK: Last {wall_streak} views were walls/empty. You should FORWARD to change position.\n"
+        wall_warning = f"\n⚠️ WALL STREAK: Last {wall_streak} views were walls/empty. You should FORWARD to escape this area.\n"
 
     prompt = (
         f"TARGET: \"{target}\"\n\n"
-        f"UNCHECKED OPEN directions (turn to check):\n{unchecked_text}\n\n"
+        f"CAMERA SCENE OBSERVATIONS (use these to choose direction):\n{camera_text}\n\n"
+        f"UNCHECKED directions (turn to look):\n{unchecked_text}\n\n"
         f"ALREADY CHECKED:\n{checked_text}\n\n"
-        f"{forward_hint}\n"
-        f"{scene_history}"
-        f"{wall_warning}"
+        f"{forward_hint}\n\n"
+        f"BLOCKED by LiDAR (DO NOT go here):\n{blocked_text}\n"
+        f"⚠️ LiDAR has 30° front dead zone — distances are unreliable for choosing direction.\n"
+        f"{wall_warning}\n"
         f"MOVES: {move_count}/{max_moves} | STEP: {step + 1}/{max_steps} | TURNS HERE: {turns_at_position}\n"
         f"Reply JSON:"
     )
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             resp = await client.post(f"{SERVER_BASE}/generate", json={
                 "prompt": prompt,
                 "system": system,
@@ -1429,11 +1593,17 @@ async def _vlm_describe_only(timeout: float = 30.0, retry: bool = False) -> str:
 
     try:
         if retry:
-            vlm_prompt = "What do you see? Name each object, its color, and whether it is on the left, center, or right. If there is an open path, corridor, or doorway, mention it."
+            vlm_prompt = (
+                "What do you see? List ALL objects — including small, far, or partially visible ones. "
+                "For each: name, color, position (left/center/right). "
+                "Also: WHERE is open space to move — LEFT, CENTER, or RIGHT?"
+            )
         else:
             vlm_prompt = (
-                "Describe what you see. List every object with its color and position (left/center/right). "
-                "Also note any open path, corridor, doorway, or passage you can see."
+                "Describe ALL objects you see — near and far, big and small. "
+                "For each: name, color, shape, position (left/center/right). "
+                "Include small or distant objects too. "
+                "Also: Which direction (LEFT/CENTER/RIGHT) has open space to move?"
             )
 
         vlm_url = f"{SERVER_BASE}/vlm/describe-bytes"
@@ -1442,7 +1612,7 @@ async def _vlm_describe_only(timeout: float = 30.0, retry: bool = False) -> str:
                 vlm_url,
                 content=frame_small,
                 headers={"Content-Type": "image/jpeg"},
-                params={"prompt": vlm_prompt, "lang": "th", "max_tokens": "300"},
+                params={"prompt": vlm_prompt, "lang": "th", "max_tokens": "500"},
             )
 
         if vlm_resp.status_code != 200:
@@ -1564,10 +1734,7 @@ async def _llm_reason_target(target: str, scene_description: str, timeout: float
         found, location, reason, confidence = _parse_llm_reasoning(llm_text)
 
         # Sanity checks
-        vlm_suspicious = len(scene_description) > 2000
         if found and confidence < 0.7:
-            found = False
-        if found and vlm_suspicious and confidence < 0.9:
             found = False
 
         return found, location, confidence, reason
@@ -1598,7 +1765,7 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
     frame = cam.get_frame() if cam else None
     if not frame:
         logger.warning("⚠️ No local camera frame — cannot run VLM check")
-        return False, "", "", 0.0
+        return False, "", "", 0.0, ""
 
     # ─── Check frame freshness — reject stale frames ───
     # If camera died (USB disconnect), get_frame() returns the last cached frame.
@@ -1610,7 +1777,7 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
             f"⚠️ Frame too old ({frame_age:.1f}s > {MAX_FRAME_AGE}s) — camera may be dead. "
             f"Skipping VLM check to avoid false positive."
         )
-        return False, "", "", 0.0
+        return False, "", "", 0.0, ""
 
     # ─── Resize frame to 480x360 for balanced speed/quality ───
     # 640x480 (~80KB) is too large for Qwen3-VL (takes >30s).
@@ -1637,19 +1804,27 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
         # keep only the object name (e.g., "กุญแจให้หน่อยครับ เริ่มจาก..." → "กุญแจ")
         vlm_target = normalize_search_target(target)
 
-        # Pure scene description prompt — do NOT mention the target.
-        # If we tell VLM what we're looking for, it echoes the target name back
-        # ("ป้ายที่มีตัวอักษรสีส้มตัว...") instead of describing what it actually sees.
-        # LLM Reasoning (Step 2) does the matching between description and target.
-        # Do NOT mention "thinking" or "ห้ามคิด" — it paradoxically triggers more thinking.
+        # Target-aware VLM prompt: tell VLM what we're looking for so it
+        # pays attention to small/distant objects that match.  LLM Reasoning
+        # (Step 2) still verifies — so false positives from VLM get caught,
+        # but missing the target entirely is the worse failure mode.
         # Server-side qwen_vlm.py appends /no_think automatically.
         if retry:
-            # Alternate prompt on retry — break echo pattern with a completely different phrasing
-            vlm_prompt = "What do you see? Name each object, its color, and whether it is on the left, center, or right. If there is an open path, corridor, or doorway, mention it."
+            vlm_prompt = (
+                f"Look carefully for: {vlm_target}. "
+                "Scan the ENTIRE image — left to right, near to far. "
+                "List ALL objects, even small, distant, or partially visible ones. "
+                "For each: name, color, shape, position (left/center/right). "
+                "If anything resembles the target, describe it in detail. "
+                "Be honest — only describe what is actually visible."
+            )
         else:
             vlm_prompt = (
-                "Describe what you see. List every object with its color and position (left/center/right). "
-                "Also note any open path, corridor, doorway, or passage you can see."
+                f"A robot is searching for: {vlm_target}. "
+                "Describe ALL objects you see — near and far, big and small. "
+                "For each object: name, color, shape, position (left/center/right). "
+                "Pay special attention to small or distant objects. "
+                "IMPORTANT: Only describe what you ACTUALLY see. Do NOT imagine objects."
             )
 
         vlm_url = f"{SERVER_BASE}/vlm/describe-bytes"
@@ -1658,12 +1833,12 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
                 vlm_url,
                 content=frame_small,
                 headers={"Content-Type": "image/jpeg"},
-                params={"prompt": vlm_prompt, "lang": "th", "max_tokens": "300"},
+                params={"prompt": vlm_prompt, "lang": "th", "max_tokens": "500"},
             )
 
         if vlm_resp.status_code != 200:
             logger.warning(f"⚠️ VLM Describe failed: HTTP {vlm_resp.status_code} — body: {vlm_resp.text[:200]}")
-            return False, "", "", 0.0
+            return False, "", "", 0.0, ""
         
         vlm_data = vlm_resp.json()
         scene_description = vlm_data.get("text", "")
@@ -1672,7 +1847,7 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
         if not scene_description:
             # Log full response body to diagnose
             logger.warning(f"⚠️ VLM returned empty description — full response: {vlm_resp.text[:400]}")
-            return False, "", "", 0.0
+            return False, "", "", 0.0, ""
         
         # Strip English chain-of-thought prefix at Gateway level.
         # Qwen3-VL with /no_think STILL sometimes produces reasoning preamble like:
@@ -1720,6 +1895,22 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
             "Describe what you see", "What do you see", "Name each object",
         ]
         
+        # ── TARGET PARROT GUARD ──
+        # VLM sometimes echoes the target name instead of describing the scene.
+        # e.g. searching for "ขวดน้ำฝาสีน้ำเงิน" → VLM returns "ขวดน้ำฝาสีน้ำเงิน" (17 chars)
+        # This causes LLM to say found=True with 1.0 confidence — false positive!
+        # Guard: if VLM output is short (<100 chars) and mostly matches the target, reject.
+        _target_norm = target.strip().lower()
+        _vlm_norm = scene_description.strip().lower()
+        _is_parrot = (
+            len(scene_description) < 100
+            and (_target_norm in _vlm_norm or _vlm_norm in _target_norm
+                 or (vlm_target and vlm_target.lower() in _vlm_norm))
+        )
+        if _is_parrot:
+            logger.warning(f"⚠️ VLM PARROT detected: output '{scene_description[:80]}' echoes target '{target[:40]}' — rejecting")
+            return False, "", f"__REJECTED__:target_parrot:{scene_description[:100]}", 0.0, ""
+        
         # Only reject short outputs as prompt_echo. Long outputs (>100 chars) that
         # happen to start with a prompt fragment contain real content after the fragment.
         _is_fragment = (
@@ -1732,7 +1923,7 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
                      "trailing_dots" if scene_description.rstrip('.').endswith('...') else \
                      "prompt_echo" if any(scene_description.startswith(f) for f in _prompt_fragments) else "unknown"
             logger.warning(f"⚠️ VLM rejected [{reason}] ({len(scene_description)} chars): '{scene_description[:80]}'")
-            return False, "", f"__REJECTED__:{reason}:{scene_description[:100]}", 0.0
+            return False, "", f"__REJECTED__:{reason}:{scene_description[:100]}", 0.0, ""
         
         # Log language mix for debugging (but don't reject)
         _thai_chars = len(_re.findall(r'[\u0E00-\u0E7F]', scene_description))
@@ -1774,7 +1965,7 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
             f"สำคัญ: คำอธิบายภาพอาจเป็นภาษาอังกฤษ — ให้ matching ข้ามภาษาได้\n\n"
             f"ตอบเป็น JSON เท่านั้น:\n"
             f'{{"found": true/false, "location": "top_left/top_right/top_center/center_left/center/center_right/bottom_left/bottom_right/bottom_center/unknown", '
-            f'"reason": "เหตุผลสั้นๆ", "confidence": 0.0-1.0}}'
+            f'"reason": "เหตุผลไม่ยาวมาก แต่ไม่สั้น", "confidence": 0.0-1.0}}'
         )
         
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1788,7 +1979,7 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
         if llm_resp.status_code != 200:
             logger.warning(f"⚠️ LLM Reasoning failed: HTTP {llm_resp.status_code}")
             # Fallback: simple keyword match in VLM description
-            return _fallback_keyword_check(target, scene_description), "unknown", scene_description, 0.5
+            return _fallback_keyword_check(target, scene_description), "unknown", scene_description, 0.5, "LLM failed, keyword fallback"
         
         llm_data = llm_resp.json()
         llm_text = llm_data.get("response", "")
@@ -1802,30 +1993,19 @@ async def _vlm_check(target: str, timeout: float, retry: bool = False) -> tuple:
         if reason:
             logger.info(f"   💭 Reason: {reason}")
         
-        # ─── Sanity check: if VLM response is very long (>2000 chars), it's likely
-        # English chain-of-thought hallucination — be more skeptical ───
-        vlm_suspicious = len(scene_description) > 2000
-        if vlm_suspicious:
-            logger.warning(f"⚠️ VLM response suspiciously long ({len(scene_description)} chars) — likely CoT hallucination")
-        
         # Only count as found if confidence is reasonably high
         if found and confidence < 0.7:
             logger.info(f"   ⚠️ Low confidence ({confidence}), treating as not found")
             found = False
         
-        # Extra skepticism for long VLM responses
-        if found and vlm_suspicious and confidence < 0.9:
-            logger.info(f"   ⚠️ VLM was long CoT + confidence < 0.9 ({confidence}), treating as not found")
-            found = False
-        
-        return found, location, scene_description, confidence
+        return found, location, scene_description, confidence, reason
         
     except httpx.TimeoutException:
         logger.error(f"❌ VLM/LLM check timeout ({timeout}s)")
-        return False, "", "", 0.0
+        return False, "", "", 0.0, ""
     except Exception as e:
         logger.error(f"❌ VLM+LLM check error: {e}")
-        return False, "", "", 0.0
+        return False, "", "", 0.0, ""
 
 
 def _parse_llm_reasoning(llm_text: str) -> tuple:
@@ -2031,7 +2211,7 @@ async def _search_found(target: str, location: str, description: str):
         })
         
         # ── Step D: Re-check with VLM — is the object still visible + how close? ──
-        found, new_location, new_desc, _approach_conf = await _vlm_check(target, 30.0)
+        found, new_location, new_desc, _approach_conf, _approach_reason = await _vlm_check(target, 30.0)
         
         if found:
             current_location = new_location
@@ -2430,12 +2610,16 @@ def _lidar_obstacle_check() -> bool:
 _robot_pose = {"x": 0.0, "y": 0.0, "theta": 0.0}
 _odom_subscribed = False
 _odom_msg_count = 0
-_odom_source = "none"  # "odom_hybrid" | "dead_reckoning" | "none"
+_odom_source = "none"  # "amcl" | "odom_hybrid" | "dead_reckoning" | "none"
 _odom_xy_moving = False  # True if /odom x,y actually changes over time
 
 # Track whether /odom provides real x,y or just yaw
 _odom_first_pos = None  # (x, y) from first odom message
 _odom_xy_drift = 0.0    # cumulative x,y drift from first position
+
+# AMCL localized pose (map frame) — takes priority when available
+_amcl_pose_active = False
+_amcl_pose_count = 0
 
 def _odom_callback(msg):
     """Extract theta from /odom. MyAGV odom provides reliable yaw but
@@ -2451,7 +2635,9 @@ def _odom_callback(msg):
         theta = math.atan2(siny, cosy)
 
         # Always use odom theta — it's reliable from IMU/encoders
-        _robot_pose["theta"] = theta
+        # BUT if AMCL is active, AMCL provides map-frame pose (more accurate)
+        if not _amcl_pose_active:
+            _robot_pose["theta"] = theta
 
         # Track whether /odom x,y actually changes
         ox, oy = pos["x"], pos["y"]
@@ -2462,12 +2648,13 @@ def _odom_callback(msg):
             if drift > _odom_xy_drift:
                 _odom_xy_drift = drift
             # If odom x,y has moved >5cm total, it's working — use it for position too
-            if _odom_xy_drift > 0.05:
+            if _odom_xy_drift > 0.05 and not _amcl_pose_active:
                 _odom_xy_moving = True
                 _robot_pose["x"] = ox
                 _robot_pose["y"] = oy
 
-        _odom_source = "odom_hybrid"
+        if not _amcl_pose_active:
+            _odom_source = "odom_hybrid"
         _odom_msg_count += 1
         if _odom_msg_count <= 3 or _odom_msg_count % 200 == 0:
             logger.info(
@@ -2479,11 +2666,41 @@ def _odom_callback(msg):
         if _odom_msg_count <= 5:
             logger.warning(f"⚠️ Odom parse error #{_odom_msg_count}: {e} — keys={list(msg.keys()) if isinstance(msg, dict) else type(msg)}")
 
+def _amcl_pose_callback(msg):
+    """Extract position from /amcl_pose (map frame). Takes priority over /odom
+    because AMCL provides the corrected map-frame position for display on SLAM map."""
+    global _amcl_pose_active, _amcl_pose_count, _odom_source
+    try:
+        pos = msg["pose"]["pose"]["position"]
+        ori = msg["pose"]["pose"]["orientation"]
+        siny = 2.0 * (ori["w"] * ori["z"] + ori["x"] * ori["y"])
+        cosy = 1.0 - 2.0 * (ori["y"] ** 2 + ori["z"] ** 2)
+        theta = math.atan2(siny, cosy)
+
+        _robot_pose["x"] = pos["x"]
+        _robot_pose["y"] = pos["y"]
+        _robot_pose["theta"] = theta
+        _odom_source = "amcl"
+        _amcl_pose_active = True
+        _amcl_pose_count += 1
+
+        if _amcl_pose_count <= 3 or _amcl_pose_count % 200 == 0:
+            logger.info(
+                f"📍 AMCL #{_amcl_pose_count}: x={pos['x']:.3f} y={pos['y']:.3f} θ={math.degrees(theta):.1f}° [map frame]"
+            )
+    except (KeyError, TypeError) as e:
+        _amcl_pose_count += 1
+        if _amcl_pose_count <= 5:
+            logger.warning(f"⚠️ AMCL pose parse error #{_amcl_pose_count}: {e}")
+
 def _update_dead_reckoning(linear_x: float, angular_z: float, duration: float):
     """Update robot pose x,y via dead reckoning from cmd_vel commands.
     Always updates x,y unless /odom x,y has been verified as working.
     Theta is always from /odom when available (more accurate than DR)."""
     global _odom_source
+    # If AMCL is active, it handles position — skip DR entirely
+    if _amcl_pose_active:
+        return
     # If /odom x,y is verified working, skip DR for position
     if _odom_xy_moving:
         return
@@ -2524,6 +2741,11 @@ async def _subscribe_odom():
             topic.subscribe(_odom_callback)
             _odom_subscribed = True
             logger.info("📍 Subscribed to /odom — robot pose tracking active")
+
+            # Also subscribe to /amcl_pose for map-frame localized position
+            amcl_topic = roslibpy.Topic(ros, "/amcl_pose", "geometry_msgs/PoseWithCovarianceStamped")
+            amcl_topic.subscribe(_amcl_pose_callback)
+            logger.info("📍 Subscribed to /amcl_pose — AMCL localization active")
             return
         except Exception as e:
             logger.warning(f"⚠️ Odom attempt {attempt}/{MAX_RETRIES} failed: {e}")
@@ -3114,8 +3336,19 @@ async def gw_audio(ws: WebSocket):
                     await cancel_search()
                     await asyncio.sleep(1)  # Wait for previous search to clean up
                 
+                # LLM enrichment: if the original command has rich detail that
+                # regex stripped away, use LLM to extract structured description.
+                # Compare raw text length vs cleaned target — big difference = lost detail
+                _raw_after_wake = text  # text already has wake word removed
+                _original_target = find_target  # save Thai name before enrichment
+                if len(_raw_after_wake) > len(find_target) + 8 and len(_raw_after_wake) > 15:
+                    logger.info(f"🧠 Rich query detected (raw={len(_raw_after_wake)} vs target={len(find_target)} chars) — enriching with LLM...")
+                    enriched = await _llm_enrich_search_query(_raw_after_wake)
+                    if enriched != _raw_after_wake:
+                        find_target = enriched
+                
                 # Start visual search as background task
-                asyncio.create_task(visual_search(find_target))
+                asyncio.create_task(visual_search(find_target, display_name=_original_target))
                 return
             
             # 2. ถ้า Regex ไม่จับ → ลอง LLM Planner (สำหรับคำสั่งยากๆ เช่น "หาของ", "ไปที่โต๊ะ")
@@ -3199,7 +3432,13 @@ async def gw_text(inp: TextIn):
         if _search_active:
             await cancel_search()
             await asyncio.sleep(1)
-        asyncio.create_task(visual_search(find_target))
+        # LLM enrichment for rich queries (same logic as WebSocket path)
+        _original_target = find_target
+        if len(text) > len(find_target) + 8 and len(text) > 15:
+            enriched = await _llm_enrich_search_query(text)
+            if enriched != text:
+                find_target = enriched
+        asyncio.create_task(visual_search(find_target, display_name=_original_target))
         return {"ok": True, "mode": "visual_search", "target": find_target}
     
     # 2. ถ้า Regex ไม่จับ → ลอง LLM Planner

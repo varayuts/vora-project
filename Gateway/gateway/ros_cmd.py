@@ -17,6 +17,7 @@ class MotionPublisher:
         self._topic = None
         self._mqtt = None
         self.post_motion_hook = None  # callable(linear_x, angular_z, actual_duration)
+        self._cancel_checker = None   # callable() -> bool, set by search to allow cancel during motion
         if USE_MQTT:
             try:
                 import paho.mqtt.client as mqtt
@@ -97,13 +98,19 @@ class MotionPublisher:
             
             interrupted = False
             for i in range(loop_count):
-                # Real-time obstacle interrupt: check LiDAR every iteration
+                # Real-time obstacle interrupt: check LiDAR EVERY iteration (~0.1s)
                 # Only applies to forward motion (lx > 0) — don't interrupt rotations or backward
-                if obstacle_checker and lx > 0 and i % 3 == 0:  # check every ~0.3s
+                if obstacle_checker and lx > 0:
                     if obstacle_checker():
                         print(f"🛑 LIDAR INTERRUPT at step {i}/{loop_count} — obstacle detected during motion!")
                         interrupted = True
                         break
+                
+                # Cancel check: allow search cancellation to interrupt motion
+                if self._cancel_checker and self._cancel_checker():
+                    print(f"🛑 CANCEL INTERRUPT at step {i}/{loop_count}")
+                    interrupted = True
+                    break
                 
                 self._topic.publish(self._twist(lx, az))
                 await asyncio.sleep(0.1)

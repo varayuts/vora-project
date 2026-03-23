@@ -811,7 +811,7 @@ body::after{
 .cot-steps{
   padding-top:10px;border-top:1px solid rgba(124,92,255,.12);
   transition:height .3s ease;
-  max-height:400px;overflow-y:auto;
+  max-height:600px;overflow-y:auto;
   scrollbar-width:thin;scrollbar-color:rgba(124,92,255,.2) transparent;
 }
 .cot-steps::-webkit-scrollbar{width:4px}
@@ -855,6 +855,41 @@ body::after{
 .cot-reason{
   font-style:italic;color:var(--text3);font-size:11px;
 }
+/* VLM/LLM Thinking Blocks */
+.cot-thinking-block{
+  margin-top:6px;border-radius:8px;
+  background:rgba(0,0,0,.15);border:1px solid rgba(255,255,255,.06);
+  overflow:hidden;cursor:pointer;transition:all .2s ease;
+  font-family:var(--font);
+}
+.cot-thinking-block:hover{border-color:rgba(255,255,255,.12)}
+.cot-thinking-header{
+  display:flex;align-items:center;gap:6px;padding:6px 10px;
+  font-size:11px;color:var(--text2);user-select:none;
+}
+.cot-thinking-icon{font-size:13px}
+.cot-thinking-toggle{
+  margin-left:auto;font-size:10px;color:var(--text3);
+  transition:transform .2s ease;
+}
+.cot-thinking-block.expanded .cot-thinking-toggle{transform:rotate(90deg)}
+.cot-thinking-body{
+  max-height:0;overflow:hidden;padding:0 10px;
+  font-size:11px;line-height:1.6;color:var(--text3);
+  transition:max-height .3s ease,padding .3s ease;
+  white-space:pre-wrap;word-break:break-word;
+}
+.cot-thinking-block.expanded .cot-thinking-body{
+  max-height:300px;overflow-y:auto;padding:4px 10px 8px;
+  scrollbar-width:thin;scrollbar-color:rgba(124,92,255,.2) transparent;
+}
+.cot-thinking-block.vlm{border-left:2px solid rgba(59,130,246,.4)}
+.cot-thinking-block.llm{border-left:2px solid rgba(167,139,250,.4)}
+.cot-thinking-block.llm.found{border-left-color:var(--green);background:rgba(16,185,129,.06)}
+.cot-thinking-block.llm.found .cot-thinking-header{color:var(--green)}
+.cot-thinking-block.llm.partial{border-left-color:var(--amber);background:rgba(245,158,11,.06)}
+.cot-thinking-block.llm.partial .cot-thinking-header{color:var(--amber)}
+.cot-thinking-block.llm.notfound .cot-thinking-header{color:var(--text3)}
 
 /* ═══════════════ TYPEWRITER EFFECT ═══════════════ */
 .msg-bubble.typewriter .tw-cursor{
@@ -1777,6 +1812,10 @@ function handleDashboardEvent(data) {
           const reason = data.reason || '';
           const desc = data.description || '';
           const checks = data.total_checks || '?';
+          const vlmScene = data.vlm_scene || '';
+          const llmReason = data.llm_reason || '';
+          const llmFound = data.llm_found || false;
+          const llmConf = data.llm_confidence != null ? data.llm_confidence : -1;
           
           updateSearchProgress(step, maxSteps,
             `Step ${step}/${maxSteps} — VLM checks: ${checks}`
@@ -1797,7 +1836,22 @@ function handleDashboardEvent(data) {
             cotText = `<strong>Step ${step || '?'}</strong> Scanning...`;
           }
           if (reason) cotText += ` <span class="cot-reason">— ${reason}</span>`;
-          if (desc) cotText += `<br/><span class="cot-vlm-desc" onclick="this.classList.toggle('expanded')" title="Click to expand">👁️ ${desc}</span>`;
+          
+          // VLM Scene description (expandable thinking block)
+          if (vlmScene) {
+            cotText += `<br/><div class="cot-thinking-block vlm" onclick="this.classList.toggle('expanded')">` +
+              `<div class="cot-thinking-header"><span class="cot-thinking-icon">👁️</span> <strong>VLM Scene</strong> <span class="cot-thinking-toggle">▸</span></div>` +
+              `<div class="cot-thinking-body">${vlmScene}</div></div>`;
+          }
+          
+          // LLM Reasoning (expandable thinking block)
+          if (llmReason) {
+            const confClass = llmFound ? 'found' : (llmConf >= 0.3 ? 'partial' : 'notfound');
+            const confLabel = llmFound ? '✅ Found' : (llmConf >= 0.3 ? `⚠️ Partial (${llmConf.toFixed(1)})` : `❌ Not found`);
+            cotText += `<div class="cot-thinking-block llm ${confClass}" onclick="this.classList.toggle('expanded')">` +
+              `<div class="cot-thinking-header"><span class="cot-thinking-icon">🧠</span> <strong>LLM</strong> ${confLabel} <span class="cot-thinking-toggle">▸</span></div>` +
+              `<div class="cot-thinking-body">${llmReason}</div></div>`;
+          }
           
           addCotStep(cotIcon, cotText, 'active');
         }
@@ -2614,7 +2668,7 @@ async function fetchMapState() {
       // Update position source indicator
       if ($('telem-pos-src')) {
         const src = d.robot.source || 'none';
-        const srcLabel = src === 'odom' ? '📡 Odom' : src === 'dead_reckoning' ? '🧭 DR' : '—';
+        const srcLabel = src === 'amcl' ? '🗺️ AMCL' : src === 'odom' ? '📡 Odom' : src === 'odom_hybrid' ? '📡 Odom' : src === 'dead_reckoning' ? '🧭 DR' : '—';
         $('telem-pos-src').textContent = srcLabel;
       }
       // Update map position overlay

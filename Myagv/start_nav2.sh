@@ -59,6 +59,8 @@ ok "Prerequisites OK (/scan + /odom active)"
 PIDS=()
 cleanup() {
     info "Shutting down Nav2 stack..."
+    ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+        "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" 2>/dev/null &
     for p in "${PIDS[@]}"; do
         kill "$p" 2>/dev/null || true
     done
@@ -129,6 +131,7 @@ if [[ "$MODE" == "nav" ]]; then
         use_sim_time:=false &
     PIDS+=($!)
     sleep 5
+    ok "Map Server + AMCL started (initial pose auto-set via set_initial_pose param)"
 
     # 2) Nav2 (planner + controller + bt_navigator + recoveries)
     info "Starting Nav2 navigation stack..."
