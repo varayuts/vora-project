@@ -97,11 +97,10 @@ async def understand_image(
         img_b64 = await asyncio.to_thread(_encode_image_base64, image_path)
 
         # Build prompt (no system prompt — Qwen3-VL works better with direct prompts)
-        # Use question form to avoid Qwen3-VL empty response on imperative prompts
-        # Append /no_think to suppress Qwen3 chain-of-thought mode
+        # NOTE: do NOT append /no_think and do NOT set think=False.
+        # When both are set, qwen3-vl:8b puts everything in the thinking field and
+        # returns response="" (empty). We strip <think> blocks ourselves after.
         full_prompt = prompt
-        if not full_prompt.rstrip().endswith("/no_think"):
-            full_prompt = full_prompt.rstrip() + " /no_think"
 
         url = f"{_vlm_host()}/api/generate"
         payload = {
@@ -109,12 +108,12 @@ async def understand_image(
             "prompt": full_prompt,
             "images": [img_b64],
             "stream": False,
-            "think": False,             # Disable Qwen3 thinking mode for speed
             "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
                 "temperature": temperature,
                 "top_p": 0.9,
                 "num_predict": max_tokens,
+                "num_ctx": 4096,
             },
         }
 
@@ -215,25 +214,26 @@ async def understand_image_bytes(
     try:
         img_b64 = _encode_bytes_base64(image_bytes)
 
-        # ── Qwen3 /no_think: append tag to suppress chain-of-thought ──
-        # Qwen3 models respect /no_think at the END of user messages.
-        # This is MORE reliable than the top-level "think" flag alone.
-        if not prompt.rstrip().endswith("/no_think"):
-            prompt = prompt.rstrip() + " /no_think"
-
+        # NOTE: do NOT append /no_think and do NOT set think=False.
+        # When both are set, qwen3-vl:8b routes ALL output to the Ollama
+        # 'thinking' field and returns response="" — causing empty VLM descriptions.
+        # We strip <think>...</think> blocks ourselves via _strip_think_and_cot().
         url = f"{_vlm_host()}/api/generate"
         payload = {
             "model": _vlm_model(),
             "prompt": prompt,
             "images": [img_b64],
             "stream": False,
-            "think": False,             # Disable Qwen3 thinking — critical for speed + non-empty response
             "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
                 "temperature": temperature,
                 "top_p": 0.9,
                 "num_predict": max_tokens,
-                # num_ctx omitted — Qwen3-VL needs full context for image tokens
+                # num_ctx MUST be bounded — Qwen3-VL defaults to 262144 which
+                # consumes 49GB VRAM alone, evicting the LLM from GPU.
+                # 4096 is sufficient for single-frame VLM analysis (image tokens
+                # are processed separately from the text context window).
+                "num_ctx": 4096,
             },
         }
 
@@ -255,27 +255,57 @@ async def understand_image_bytes(
         response_text = raw_response.strip()
 
         import re
-        # Strip any residual <think>...</think> blocks (closed blocks)
-        think_match = re.search(r"<think>(.*?)</think>", response_text, flags=re.DOTALL)
-        think_content = think_match.group(1).strip() if think_match else ""
-        response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
 
-        # Handle UNCLOSED <think> (model ran out of tokens mid-thinking)
-        if not response_text and response_text == "" and "<think>" in raw_response:
+        def _strip_think_and_cot(text: str) -> str:
+            """Remove <think> blocks and CoT preamble from VLM output.
+            Qwen3-VL ignores think:False and produces <think> blocks anyway.
+            After stripping, also remove English CoT preamble like
+            'Got it, let\'s look at the image.' """
+            if not text:
+                return text
+            # 1. Strip closed <think>...</think>
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            # 2. Strip unclosed <think> (model hit token limit mid-thought)
+            if "<think>" in text:
+                text = text.split("<think>")[0].strip()
+            # 3. Strip </think> tag remnants
+            text = text.replace("</think>", "").strip()
+            # 4. Strip English CoT preamble (common patterns from Qwen3-VL)
+            _cot_patterns = [
+                r"^(?:got it|okay|alright|so|well|let me|let's|hmm|first)[,.]?\s*(?:let['']?s\s+)?(?:look at|analyze|examine|check|see|identify|list|start with)\s+(?:the\s+)?(?:image|photo|picture|frame|objects?|items?|elements?|what)[.\s]*",
+                r"^(?:starting with|looking at|the (?:main|first|image))\s+(?:the\s+)?(?:elements?|objects?|structures?|features?)[,.:]\s*",
+                r"^(?:first,?\s+)?(?:identify|list|note|observe)\s+(?:the\s+)?(?:all\s+)?(?:objects?|items?|elements?|visible)[.\s]*",
+            ]
+            for pat in _cot_patterns:
+                text = re.sub(pat, "", text, count=1, flags=re.IGNORECASE).strip()
+            return text
+
+        # Strip <think> blocks and CoT from main response
+        response_text = _strip_think_and_cot(response_text)
+
+        # Fallback 1: if empty, try extracting from <think> content
+        if not response_text:
+            think_match = re.search(r"<think>(.*?)</think>", raw_response, flags=re.DOTALL)
+            if think_match:
+                think_content = _strip_think_and_cot(think_match.group(1))
+                if think_content and len(think_content) > 20:
+                    logger.warning(f"⚠️ VLM response empty, using cleaned think content ({len(think_content)} chars)")
+                    response_text = think_content
+
+        # Fallback 2: unclosed <think> — extract content after tag
+        if not response_text and "<think>" in raw_response:
             unclosed = raw_response.split("<think>", 1)[-1].strip()
-            if unclosed:
-                logger.warning(f"⚠️ VLM has unclosed <think> block ({len(unclosed)} chars), using as fallback")
+            unclosed = _strip_think_and_cot(unclosed)
+            if unclosed and len(unclosed) > 20:
+                logger.warning(f"⚠️ VLM unclosed <think>, using cleaned content ({len(unclosed)} chars)")
                 response_text = unclosed
 
-        # Fallback 1: use closed think content if main response empty
-        if not response_text and think_content:
-            logger.warning(f"⚠️ VLM response empty after stripping <think>, using think content as fallback")
-            response_text = think_content
-
-        # Fallback 2: use Ollama's separate 'thinking' field if available
+        # Fallback 3: use Ollama's separate 'thinking' field
         if not response_text and raw_thinking:
-            logger.warning(f"⚠️ Using Ollama 'thinking' field as fallback ({len(raw_thinking)} chars)")
-            response_text = raw_thinking.strip()
+            cleaned_thinking = _strip_think_and_cot(raw_thinking)
+            if cleaned_thinking and len(cleaned_thinking) > 20:
+                logger.warning(f"⚠️ Using cleaned Ollama 'thinking' field ({len(cleaned_thinking)} chars)")
+                response_text = cleaned_thinking
 
         # ── Strip English chain-of-thought prefix ──────────────────────
         # Qwen3-VL sometimes ignores /no_think and starts with English CoT

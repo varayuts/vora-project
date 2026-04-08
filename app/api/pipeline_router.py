@@ -12,6 +12,7 @@ import logging
 import json
 import asyncio
 
+from ..core.settings import settings
 from ..core.vora_pipeline import (
     process_command,
     process_with_accumulator,
@@ -139,11 +140,15 @@ async def process_voice_command(req: CommandRequest):
         # If should not process (filler, too short, incomplete)
         if not preproc.should_process:
             logger.info(f"⏭️ Skipping: {preproc.status.value}")
+            # Still provide a gentle response so the user doesn't see an error
+            fallback = "" if preproc.status.value == "filler" else ""
+            if preproc.status.value == "incomplete" and preproc.cleaned:
+                fallback = f"🤔 ไม่เข้าใจ \"{preproc.cleaned}\" ลองพูดใหม่นะครับ"
             return CommandResponse(
                 success=True,
                 intent="skip",
                 clean_text=preproc.cleaned,
-                response_text="",  # ไม่ตอบอะไร
+                response_text=fallback,
                 commands=[]
             )
         
@@ -409,9 +414,9 @@ async def get_status():
     return {
         "pipeline": "ready",
         "models": {
-            "agent": "gemma3:12b-it-qat",
-            "reasoning": "gemma3:27b-it-qat",
-            "vlm": "gemma3n:e4b"
+            "agent": settings.OLLAMA_REFINE_MODEL,
+            "reasoning": settings.OLLAMA_MODEL,
+            "vlm": settings.OLLAMA_VLM_MODEL
         },
         "connected_robots": list(gateway_connections.keys()),
         "robot_count": len(gateway_connections),

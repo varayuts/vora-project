@@ -1,7 +1,0 @@
-image: /home/er/Desktop/VORA_myAGV_only_ros2_package/new5/maps/new5_map5.pgm
-mode: trinary
-resolution: 0.05
-origin: [-10, -10, 0]
-negate: 0
-occupied_thresh: 0.65
-free_thresh: 0.25

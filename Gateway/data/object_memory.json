@@ -1,0 +1,20 @@
+{
+  "ขวดน้ำ": [
+    {
+      "object_name": "ขวดน้ำ",
+      "display_name": "ขวดน้ำ",
+      "location": "center_left",
+      "location_description": "ด้านซ้าย",
+      "timestamp": 1774431191.8938274,
+      "confidence": 0.9,
+      "image_url": null,
+      "observer_x": 0.13801026404021396,
+      "observer_y": -0.7873888565500128,
+      "observer_theta": -0.001410888848263747,
+      "bearing_deg": 25.0,
+      "section": "D",
+      "localization_source": "",
+      "last_verified_at": 0.0
+    }
+  ]
+}

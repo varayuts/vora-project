@@ -358,6 +358,17 @@ def preprocess(text: str) -> PreprocessResult:
         )
     
     if not is_complete_sentence(cleaned):
+        # ถ้ามีตัวอักษรไทย >= 3 ตัว ถือว่าเป็น chitchat — ส่งต่อ LLM ได้
+        thai_chars = sum(1 for c in cleaned if '\u0E00' <= c <= '\u0E7F')
+        if thai_chars >= 3 or len(cleaned) >= 6:
+            logger.info(f"💬 Treating as chitchat: '{cleaned}' (thai_chars={thai_chars})")
+            return PreprocessResult(
+                status=TextStatus.VALID,
+                original=original,
+                cleaned=cleaned,
+                corrections=corrections,
+                should_process=True
+            )
         logger.info(f"⏳ Incomplete sentence: '{cleaned}'")
         return PreprocessResult(
             status=TextStatus.INCOMPLETE,

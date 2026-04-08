@@ -175,13 +175,14 @@ fi
 # ============================================================
 print_header "🚀 Starting Services"
 
-print_info "This will open 6 terminals:"
-echo "  0. MyAGV Hardware Driver (motor control)"
-echo "  1. YDLidar G2 (LiDAR → /scan for obstacle avoidance)"
-echo "  2. ROSBridge WebSocket (port 9090)"
-echo "  3. Camera Publisher (OpenCV direct → /camera/compressed)"
-echo "  4. VORA Command Executor (ROS2 node)"
-echo "  5. Audio Stream Client (to Gateway)"
+print_info "This will open 7 terminals:"
+echo "  0. MyAGV Hardware Driver (motor control + raw /odom + /imu)"
+echo "  1. EKF Odometry Filter (robot_localization — filtered odom + TF)"
+echo "  2. YDLidar G2 (LiDAR → /scan for obstacle avoidance)"
+echo "  3. ROSBridge WebSocket (port 9090)"
+echo "  4. Camera Publisher (OpenCV direct → /camera/compressed)"
+echo "  5. VORA Command Executor (ROS2 node)"
+echo "  6. Audio Stream Client (to Gateway)"
 echo ""
 read -p "Press Enter to continue..."
 
@@ -203,7 +204,38 @@ gnome-terminal --title="VORA: MyAGV Hardware" -- bash -c "
 " &
 sleep 3
 
-# Terminal 1: YDLidar G2 (LiDAR for real-time obstacle detection)
+# Terminal 1: EKF Odometry Filter
+# Fuses wheel encoder velocities (/odom twist) + IMU yaw rate (/imu) into
+# filtered odometry + broadcasts odom→base_footprint TF for Nav2.
+# Replaces odom_tf_broadcaster.py when running — start_nav2.sh detects this.
+print_info "Starting EKF Odometry Filter in new terminal..."
+gnome-terminal --title="VORA: EKF Odometry" -- bash -c "
+    echo '══════════════════════════════════════════════════════════';
+    echo '📐 EKF Odometry Filter (robot_localization)';
+    echo '══════════════════════════════════════════════════════════';
+    echo 'Fuses: /odom (wheel vx,vy,vyaw) + /imu (yaw rate)';
+    echo 'Publishes: /odometry/filtered + odom→base_footprint TF';
+    echo '══════════════════════════════════════════════════════════';
+    source /opt/ros/galactic/setup.bash;
+    source ~/myagv_ros2/install/setup.bash;
+    echo 'Waiting 5s for driver (/odom + /imu) to start...';
+    sleep 5;
+    echo 'Publishing IMU static TF (base_footprint→imu_link, mounted upside-down)...';
+    ros2 run tf2_ros static_transform_publisher \
+        0 0 0 0 3.14159 3.14159 /base_footprint /imu_link &
+    sleep 1;
+    echo 'Starting EKF node...';
+    ros2 run robot_localization ekf_node \
+        --ros-args \
+        --params-file ~/myagv_ros2/src/myagv_odometry/config/ekf.yaml;
+    echo '';
+    echo '══ EKF exited. Check output above for errors. ══';
+    read -p 'Press Enter to close...';
+    exec bash
+" &
+sleep 2
+
+# Terminal 2: YDLidar G2 (LiDAR for real-time obstacle detection)
 print_info "Starting YDLidar in new terminal..."
 gnome-terminal --title="VORA: LiDAR" -- bash -c "
     echo '══════════════════════════════════════════════════════════';

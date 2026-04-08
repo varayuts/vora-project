@@ -1,0 +1,49 @@
+{
+  "zones": [
+    {
+      "id": "bedroom",
+      "label_th": "ห้องนอน",
+      "label_en": "Bedroom",
+      "center_x": 0.5,
+      "center_y": 2.5,
+      "radius": 1.4,
+      "expected_objects": ["ขวดน้ำ", "หมอน", "โทรศัพท์", "กระเป๋าสตางค์", "กุญแจ"],
+      "notes": "มีเตียง หมอน ผ้าห่ม",
+      "color": "#8b5cf6"
+    },
+    {
+      "id": "entrance",
+      "label_th": "หน้าประตู",
+      "label_en": "Entrance",
+      "center_x": 0.5,
+      "center_y": 0.5,
+      "radius": 1.4,
+      "expected_objects": ["กุญแจ", "กระเป๋าสตางค์", "รองเท้า", "บัตร"],
+      "notes": "โล่ง ทางเข้าออก อาจมีเศษของ",
+      "color": "#f59e0b"
+    },
+    {
+      "id": "living_room",
+      "label_th": "ห้องนั่งเล่น",
+      "label_en": "Living Room",
+      "center_x": 2.5,
+      "center_y": 2.5,
+      "radius": 1.4,
+      "expected_objects": ["ปากกา", "ดินสอ", "รีโมท", "แก้วน้ำ", "ขวดน้ำ", "กระเป๋าสตางค์"],
+      "notes": "มีโต๊ะ โซฟา เก้าอี้",
+      "color": "#10b981"
+    },
+    {
+      "id": "bathroom",
+      "label_th": "ห้องน้ำ",
+      "label_en": "Bathroom",
+      "center_x": 2.5,
+      "center_y": 0.5,
+      "radius": 1.4,
+      "expected_objects": ["ขวดน้ำ", "สบู่", "ผ้าเช็ดตัว"],
+      "notes": "มีโถส้วม อ่างล้างมือ",
+      "color": "#3b82f6"
+    }
+  ],
+  "landmarks": []
+}

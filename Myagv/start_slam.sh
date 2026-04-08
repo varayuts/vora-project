@@ -21,7 +21,7 @@ echo "[3/3] Start SLAM (gmapping)..."
 # Run gmapping in foreground (Ctrl+C to stop)
 ros2 run slam_gmapping slam_gmapping \
   --ros-args \
-  -p base_frame:=base_link \
+  -p base_frame:=base_footprint \
   -p odom_frame:=odom \
   -p map_frame:=map \
   -r scan:=/scan

@@ -142,8 +142,10 @@ class SpatialMemory:
                 "next_id": self._next_id,
                 "observations": [asdict(o) for o in self._observations],
             }
-            with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            tmp = MEMORY_FILE.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp.replace(MEMORY_FILE)
         except Exception as e:
             logger.warning(f"Failed to save spatial memory: {e}")
 
@@ -235,12 +237,13 @@ class SpatialMemory:
         if not recent:
             return ""
 
-        lines = []
+        # NOTE: coordinates are ROBOT observation positions, not object positions
+        lines = ["(coordinates = robot position when observed, not object position)"]
         for o in recent[-15:]:  # last 15 observations
             objs = ", ".join(o.objects_mentioned[:5]) if o.objects_mentioned else "—"
             desc_short = o.description[:80].replace("\n", " ")
             lines.append(
-                f"📍 ({o.x:.2f},{o.y:.2f}) heading={o.heading_deg:.0f}° "
+                f"📍 robot@({o.x:.2f},{o.y:.2f}) heading={o.heading_deg:.0f}° "
                 f"[{o.age_minutes():.0f}m ago] objects=[{objs}]: {desc_short}"
             )
         return "\n".join(lines)
@@ -399,14 +402,35 @@ class SpatialMemory:
         if not hits:
             return ""
 
+        # NOTE: coordinates are where the robot was looking FROM, not where objects are
         lines = []
         for h in hits[:5]:
             tag = "⭐ เคยเห็นวัตถุนี้" if h["type"] == "direct" else f"📌 เคยเห็น {h['landmark']}"
             lines.append(
-                f"{tag} ที่ ({h['x']:.2f},{h['y']:.2f}) heading={h['heading_deg']:.0f}° "
+                f"{tag} (หุ่นอยู่ที่ ({h['x']:.2f},{h['y']:.2f}) หัน {h['heading_deg']:.0f}°) "
                 f"[{h['age_min']:.0f} นาทีที่แล้ว]"
             )
         return "\n".join(lines)
+
+    # ═══════════════════════════════════════════
+    #  Zone-aware search suppression
+    # ═══════════════════════════════════════════
+
+    def get_recently_searched_zones(self, max_age_min: float = 5.0) -> set:
+        """Return zone IDs with >= 3 observations in last max_age_min minutes.
+
+        Used by SearchPlanner to suppress zones that were just scanned.
+        """
+        from gateway.semantic_map import semantic_map
+        zone_counts: Dict[str, int] = {}
+        cutoff = time.time() - max_age_min * 60
+        for obs in self._observations:
+            if obs.timestamp < cutoff:
+                continue
+            z = semantic_map.get_zone_at(obs.x, obs.y)
+            if z:
+                zone_counts[z.id] = zone_counts.get(z.id, 0) + 1
+        return {zid for zid, c in zone_counts.items() if c >= 3}
 
     # ═══════════════════════════════════════════
     #  Utilities

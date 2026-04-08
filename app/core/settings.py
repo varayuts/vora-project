@@ -8,20 +8,26 @@ class Settings:
     
     # ===== VORA Model Configuration =====
     # Main Reasoning LLM (complex tasks, long responses)
+    # gemma3:27b-it-qat — 18GB on disk, ~20GB VRAM loaded.
+    # gemma4:26b was tested but caused VRAM thrashing with VLM (both ~49GB total).
+    # gemma3:27b-it-qat + qwen3-vl:8b fit comfortably in 49GB A6000 together.
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:27b-it-qat")
-    
-    # Text Cleaning/Filtering LLM (was 12b, merged to 27b to avoid VRAM model swap)
+
+    # Text Cleaning/Filtering LLM — same model as main to avoid cold-start swap delay
     OLLAMA_REFINE_MODEL: str = os.getenv("OLLAMA_REFINE_MODEL", "gemma3:27b-it-qat")
-    
+
     # VLM for Vision tasks (navigation, object finding)
-    # Qwen3-VL:32B — ~20GB, 256K context, 32 languages, spatial understanding
-    # Upgraded from 8B → 32B for better scene description accuracy + less prompt echo
-    OLLAMA_VLM_MODEL: str = os.getenv("OLLAMA_VLM_MODEL", "qwen3-vl:32b")
+    # qwen3-vl:8b — 6.1GB on disk, ~8GB VRAM. Fits alongside 27b LLM.
+    OLLAMA_VLM_MODEL: str = os.getenv("OLLAMA_VLM_MODEL", "qwen3-vl:8b")
     
     # Search: DISABLED - จะใช้ RAG แทนในอนาคต
 
     # LLM performance
-    OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "600"))
+    # Default timeout reduced from 600s to 120s. The old 600s caused 10-minute
+    # blocks when ollama fell back to CPU. With GPU, gemma4:26b responds in <15s.
+    # Per-call timeouts (TIMEOUT_FAST=30s, TIMEOUT_NORMAL=90s) in OllamaProvider
+    # override this for latency-sensitive operations.
+    OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "120"))
     OLLAMA_KEEP_ALIVE: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
     OLLAMA_JSON_MAX_TOKENS: int = int(os.getenv("OLLAMA_JSON_MAX_TOKENS", "200"))
 

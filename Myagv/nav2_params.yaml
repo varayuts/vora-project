@@ -8,11 +8,11 @@
 amcl:
   ros__parameters:
     use_sim_time: false
-    alpha1: 0.2          # rotation noise from rotation
-    alpha2: 0.2          # rotation noise from translation
-    alpha3: 0.2          # translation noise from translation
-    alpha4: 0.2          # translation noise from rotation
-    alpha5: 0.2          # translation noise (omnidirectional)
+    alpha1: 0.1          # rotation noise from rotation    (omni: lower than diff)
+    alpha2: 0.1          # rotation noise from translation
+    alpha3: 0.1          # translation noise from translation
+    alpha4: 0.1          # translation noise from rotation
+    alpha5: 0.1          # translation noise (omnidirectional — used by omni model)
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -24,42 +24,40 @@ amcl:
     laser_max_range: 12.0       # YDLidar G2 max
     laser_min_range: 0.1        # YDLidar G2 min
     laser_model_type: "likelihood_field"
-    max_beams: 30
-    max_particles: 500          # reduced for Jetson Nano 4GB RAM
-    min_particles: 100
+    max_beams: 30               # was 60 — halves likelihood-field ops; sufficient for indoor lab
+    max_particles: 500          # was 2000 — prevents AMCL SIGSEGV from resource exhaustion on Jetson Nano
+    min_particles: 200          # was 500 — allow filter to shrink when well-localized
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
     recovery_alpha_fast: 0.1
     recovery_alpha_slow: 0.001
-    resample_interval: 1
-    robot_model_type: "differential"  # apt AMCL 1.0.12 format (stable, no SIGSEGV)
-    save_pose_rate: 0.5
+    resample_interval: 2            # resample every 2 filter updates — more stable
+    robot_model_type: "differential"  # omni model has SIGSEGV bug with atan2(0,0) after relocalize+rotation on Galactic; scan matching compensates for strafe prediction gap
+    save_pose_rate: 0.5             # save current pose so restart resumes correctly
     sigma_hit: 0.2
     tf_broadcast: true
-    transform_tolerance: 2.0     # increased for Jetson Nano latency
-    update_min_a: 0.1           # radians (~6°)
-    update_min_d: 0.05          # meters
-    z_hit: 0.5
+    transform_tolerance: 1.0     # 1s is plenty; 2.0 masked real TF lag bugs
+    update_min_a: 0.2           # radians (~11°) — reduce CPU on Jetson Nano
+    update_min_d: 0.1           # meters — update every 10cm not 5cm
+    z_hit: 0.7              # was 0.5 — more weight on real laser hits
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.3             # was 0.5 — less random noise → sharper localization
     z_short: 0.05
     scan_topic: /scan
-    set_initial_pose: true
-    initial_pose:
-      x: 0.0
-      y: -1.0
-      z: 0.0
-      yaw: 0.0
+    set_initial_pose: false
+    # initial_pose disabled — use /initialpose topic to set pose manually.
+    # set_initial_pose: true hardcodes startup pose and OVERRIDES any /initialpose
+    # published before AMCL fully activates, causing the "pose jumps back" bug.
 
 bt_navigator:
   ros__parameters:
     use_sim_time: false
     global_frame: map
     robot_base_frame: base_footprint
-    odom_topic: /odom
+    odom_topic: /odom_fused   # /odom has x=y=0 always (MyAGV hw bug) — use dead-reckoning fused topic
     bt_loop_duration: 10
-    default_server_timeout: 20
+    default_server_timeout: 30  # was 20 — Jetson Nano needs more time to spin up action servers
     # This build uses dual navigator plugins (NavigateToPose + NavigateThroughPoses)
     # default_bt_xml_filename is IGNORED — must use these two params instead:
     default_nav_to_pose_bt_xml: /opt/ros/galactic/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
@@ -94,8 +92,8 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.3   # must move 30cm in timeout
-      movement_time_allowance: 10.0   # 10s to make progress
+      required_movement_radius: 0.15  # 15cm — robot body is 21cm, 30cm was too aggressive near walls
+      movement_time_allowance: 20.0   # 20s — Jetson Nano + costmap lag can stall controller briefly
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -120,15 +118,15 @@ controller_server:
       decel_lim_x: -0.5
       decel_lim_y: -0.5
       decel_lim_theta: -1.0
-      vx_samples: 10
-      vy_samples: 5                  # enable strafe samples
-      vtheta_samples: 20
-      sim_time: 1.5
+      vx_samples: 6                  # was 10 — 6×3×12=216 traj (was 1000), 78% less CPU
+      vy_samples: 3                  # was 5 — Mecanum strafe, fewer samples OK in lab
+      vtheta_samples: 12             # was 20 — still smooth rotation sampling
+      sim_time: 1.0                  # was 1.5 — shorter rollout = faster per-traj eval
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.5
       xy_goal_tolerance: 0.15
-      trans_stopped_velocity: 0.15
+      trans_stopped_velocity: 0.05   # was 0.15 (= max_vel_x!) — RotateToGoal fired instantly
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics:
@@ -139,7 +137,7 @@ controller_server:
         - PathAlign
         - PathDist
         - GoalDist
-      ObstacleFootprint.scale: 0.02
+      ObstacleFootprint.scale: 0.5    # was 0.02 — too low, robot planned through obstacles
       ObstacleFootprint.sum_scores: false
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
@@ -163,6 +161,9 @@ local_costmap:
       width: 3                       # 3m × 3m local window
       height: 3
       resolution: 0.05               # 5cm — match SLAM map
+      # TF tolerance at costmap node level — covers robot pose lookup
+      # (separate from observation source tolerance below)
+      transform_tolerance: 0.5       # accept TF up to 0.5s off from query time
       # Robot footprint (polygon — rectangular body)
       footprint: "[ [0.13, 0.105], [0.13, -0.105], [-0.13, -0.105], [-0.13, 0.105] ]"
       plugins: ["obstacle_layer", "inflation_layer"]
@@ -180,6 +181,12 @@ local_costmap:
           raytrace_min_range: 0.1
           obstacle_max_range: 4.0
           obstacle_min_range: 0.1
+          # Key fix: "timestamp earlier than all TF cache data" startup race.
+          # Nav2 costmap TF buffer starts empty when the node is created.
+          # First laser scans arrive before laser_frame/odom TFs fill the buffer.
+          # 0.5s tolerance lets the message filter accept the nearest available TF
+          # instead of dropping scans whose timestamps predate the buffer start.
+          transform_tolerance: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -196,6 +203,7 @@ global_costmap:
       robot_radius: 0.15             # circumscribed radius of 21×26cm body
       resolution: 0.05
       track_unknown_space: true
+      transform_tolerance: 0.5       # same race-condition fix as local_costmap
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -214,6 +222,7 @@ global_costmap:
           raytrace_min_range: 0.1
           obstacle_max_range: 4.0
           obstacle_min_range: 0.1
+          transform_tolerance: 0.5   # same fix as local_costmap
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -260,7 +269,7 @@ waypoint_follower:
       enabled: true
       waypoint_pause_duration: 0
 
-lifecycle_manager:
+lifecycle_manager_navigation:
   ros__parameters:
     use_sim_time: false
     autostart: true
@@ -270,9 +279,13 @@ lifecycle_manager:
       - recoveries_server
       - bt_navigator
       - waypoint_follower
-    bond_timeout: 10.0
+    bond_timeout: 30.0             # was 10.0 — Jetson Nano DDS discovery is slow; 10s caused false drops
     attempt_respawn_reconnection: true
-    bond_respawn_max_duration: 10.0
+    bond_respawn_max_duration: 30.0  # was 10.0
+    # IMPORTANT: node name must match navigation_launch.py which launches this node as
+    # "lifecycle_manager_navigation". If this section is named "lifecycle_manager" instead,
+    # the params are not applied and the node uses defaults (bond_timeout=4.0),
+    # which expires before Jetson Nano DDS discovery → double startup() → lifecycle conflict.
 
 # For localization-only mode (AMCL + map_server)
 lifecycle_manager_localization:
@@ -282,4 +295,4 @@ lifecycle_manager_localization:
     node_names:
       - map_server
       - amcl
-    bond_timeout: 10.0
+    bond_timeout: 30.0  # was 10.0 — match navigation lifecycle_manager

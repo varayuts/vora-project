@@ -53,8 +53,15 @@ CAMERA_MOUNT_OFFSET_X_M = 0.0  # Camera is centered on robot body
 SERVER_BASE = os.getenv("SERVER_BASE", "https://user.tail87d9fe.ts.net")
 
 # ── Sector Analysis Config ────────────────────────────────────────────
-NUM_SECTORS = 12            # Divide 360° into 12 sectors (30° each)
-SECTOR_DEG = 360 / NUM_SECTORS  # 30° per sector
+NUM_SECTORS = 24            # Divide 360° into 24 sectors (15° each)
+SECTOR_DEG = 360 / NUM_SECTORS  # 15° per sector
+
+# ── LiDAR Scan Arc ────────────────────────────────────────────────────
+# YDLidar G2 on Elephant MyAGV: physical scan arc measured from base_footprint
+# is approximately 230° (±115° from front). The rear ~130° blind spot has no
+# LiDAR returns at all — do NOT treat those sectors as "open space".
+SCAN_ARC_DEG = 230
+SCAN_HALF_ARC_DEG = SCAN_ARC_DEG / 2   # ±115° from front
 
 # ── LiDAR Mounting Offset ─────────────────────────────────────────────
 # YDLidar G2 on Elephant MyAGV: sensor 0° points FORWARD (cable side = rear).
@@ -183,8 +190,9 @@ class ObstacleAvoidance:
         front_half_rad = math.radians(FRONT_ANGLE_DEG / 2)
         front_distances = []
         
-        # ── 360° Sector analysis (NEW) ──
-        # Divide full circle into NUM_SECTORS sectors (e.g. 12×30°)
+        # ── ~230° Sector analysis (actual scan arc, rear blind spot has no data) ──
+        # Divide the measured circle into NUM_SECTORS; sectors outside ±SCAN_HALF_ARC_DEG
+        # will naturally have zero counts and be flagged as dead zones.
         sector_sums = [0.0] * NUM_SECTORS
         sector_counts = [0] * NUM_SECTORS
         sector_mins = [float('inf')] * NUM_SECTORS
@@ -233,9 +241,12 @@ class ObstacleAvoidance:
             self._sector_min_distances[s] = sector_mins[s]
     
     def get_obstacle_checker(self):
-        """Return a synchronous callable for exec_motion's obstacle_checker param."""
+        """Return a synchronous callable for exec_motion's obstacle_checker param.
+        Uses get_forward_clearance() to skip the LiDAR dead zone (±0-15°) which
+        can return junk near-zero values and cause false positives on forward motion."""
         def _check():
-            return self._obstacle_detected and self._min_front_distance < OBSTACLE_STOP_M
+            fwd = self.get_forward_clearance()
+            return fwd < OBSTACLE_STOP_M
         return _check
     
     def find_best_direction(self) -> Dict[str, Any]:
@@ -247,12 +258,15 @@ class ObstacleAvoidance:
         2. Minimum distance (must be > robot width for clearance)
         3. Neighboring sectors (wide corridor = better than narrow gap)
         
+        NOTE: Only sectors within ±SCAN_HALF_ARC_DEG (±115°) carry real LiDAR data.
+        Rear sectors (beyond ±115°) are always marked as dead zones — no data ≠ clear.
+
         Returns:
         {
             "best_angle_deg": float,   # Best direction relative to current heading (0=front)
             "best_distance": float,    # Average distance in best direction
             "passable": bool,          # Can robot physically fit?
-            "all_sectors": [...],      # Summary of all 12 sectors
+            "all_sectors": [...],      # Summary of all 24 sectors
             "open_directions": [...]   # List of passable directions sorted by score
         }
         """
@@ -265,9 +279,13 @@ class ObstacleAvoidance:
             avg_dist = self._sector_distances[s]
             min_dist = self._sector_min_distances[s]
             
-            # Dead zone detection: sectors with NO LiDAR readings (e.g. webcam blocking ±15°)
-            # must be treated as impassable, not as "infinitely open"
-            is_dead_zone = (avg_dist == float('inf') and min_dist == float('inf'))
+            # Dead zone detection: sectors with NO LiDAR readings (e.g. webcam blocking ±15°,
+            # or outside the physical ~230° scan arc) must be treated as impassable,
+            # NOT as "infinitely open" — no data ≠ clear path.
+            is_dead_zone = (
+                (avg_dist == float('inf') and min_dist == float('inf'))
+                or abs(rel_deg) > SCAN_HALF_ARC_DEG  # outside scan arc
+            )
             
             # Check corridor width: look at perpendicular sectors for clearance
             # For a sector facing direction D, check if sectors at D±90° have enough
@@ -286,15 +304,19 @@ class ObstacleAvoidance:
                 right_clearance > ROBOT_HALF_WIDTH_M
             )
             
-            # Score: weighted combination of distance + passability
-            # Prefer closer-to-forward directions slightly (human-like: don't do 180° turn if not needed)
+            # Score: weighted combination of distance + passability + angle penalty
+            # Prefer closer-to-forward directions (human-like: don't do 180° turn if not needed)
             forward_bias = max(0, 1.0 - abs(rel_deg) / 180.0)  # 1.0 at front, 0 at back
             # Cap distances for scoring — infinity makes forward unbeatable,
             # causing robot to ALWAYS go the same direction.
             _MAX_S = 2.5  # meters
             _s_avg = min(avg_dist, _MAX_S)
             _s_min = min(min_dist, _MAX_S)
-            score = (_s_avg * 0.6 + _s_min * 0.3 + forward_bias * 0.5) if passable else 0.0
+            # Explicit angle penalty: penalise large turns so robot prefers
+            # corridors close to its current heading over equidistant far ones.
+            angle_penalty = abs(rel_deg) / 180.0
+            open_score = (_s_avg * 0.5 + _s_min * 0.2 + forward_bias * 1.0)
+            score = (open_score - 0.4 * angle_penalty) if passable else 0.0
             
             sectors.append({
                 "sector": s,
@@ -371,7 +393,70 @@ class ObstacleAvoidance:
         
         min_dist = float('inf')
         check_lo = math.radians(16)   # just past dead zone edge
-        check_hi = math.radians(60)   # up to 60° on each side
+        check_hi = math.radians(60)   # up to 60° — cos-projection removed so 60° is safe (was 40° as workaround)
+
+        for i, r in enumerate(self._last_scan_ranges):
+            if not (self._last_range_min <= r <= self._last_range_max):
+                continue
+            raw_angle = self._last_angle_min + i * self._last_angle_increment
+            angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+            if LIDAR_MIRROR:
+                angle = -angle
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+
+            abs_angle = abs(angle)
+            if check_lo <= abs_angle <= check_hi:
+                min_dist = min(min_dist, r)
+
+        return min_dist
+
+    def get_rear_obstacle_checker(self, threshold_m: float = 0.15):
+        """Return callable that checks rear+side sectors for obstacles.
+        Clamped to ±SCAN_HALF_ARC_DEG (±115°) — the rear blind spot has no rays
+        so checking beyond that would always return False and skip real obstacles
+        right at the arc edge.
+        Used during backward motion and rotation to prevent hitting rear walls."""
+        def _check():
+            if not self._last_scan_ranges:
+                return False
+            check_lo = math.radians(90)
+            # Stay within valid scan arc — blind spot starts at ±SCAN_HALF_ARC_DEG
+            check_hi = math.radians(min(165, SCAN_HALF_ARC_DEG - 5))  # ~110°
+            for i, r in enumerate(self._last_scan_ranges):
+                if not (self._last_range_min <= r <= self._last_range_max):
+                    continue
+                raw_angle = self._last_angle_min + i * self._last_angle_increment
+                angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+                if LIDAR_MIRROR:
+                    angle = -angle
+                while angle > math.pi:
+                    angle -= 2 * math.pi
+                while angle < -math.pi:
+                    angle += 2 * math.pi
+                if check_lo <= abs(angle) <= check_hi and r < threshold_m:
+                    return True
+            return False
+        return _check
+    
+    def get_side_clearance(self) -> Tuple[float, float]:
+        """
+        Side clearance (left, right) using rays at ±60° to ±120°.
+        
+        Returns (left_min, right_min) in meters.
+        Used during approach phase to detect walls beside the robot.
+        Left = positive angles, Right = negative angles (robot frame).
+        """
+        if not self._last_scan_ranges:
+            return float('inf'), float('inf')
+        
+        left_min = float('inf')
+        right_min = float('inf')
+        side_lo = math.radians(45)
+        # Cap to valid scan arc — rays beyond ±SCAN_HALF_ARC_DEG don't exist
+        side_hi = math.radians(min(120, SCAN_HALF_ARC_DEG - 5))  # ~110°
         
         for i, r in enumerate(self._last_scan_ranges):
             if not (self._last_range_min <= r <= self._last_range_max):
@@ -385,16 +470,135 @@ class ObstacleAvoidance:
             while angle < -math.pi:
                 angle += 2 * math.pi
             
-            abs_angle = abs(angle)
-            if check_lo <= abs_angle <= check_hi:
-                min_dist = min(min_dist, r)
+            if side_lo <= angle <= side_hi:
+                left_min = min(left_min, r)
+            elif -side_hi <= angle <= -side_lo:
+                right_min = min(right_min, r)
         
-        return min_dist
-    
+        return left_min, right_min
+
+    def _directional_clearance(
+        self, center_deg: float, window_deg: float = 7.5
+    ) -> Tuple[float, float, float]:
+        """
+        Compute (forward, left_side, right_side) clearance for a given direction.
+
+        Uses raw LiDAR rays at sub-sector resolution.
+        center_deg is relative to robot front (+ = left, - = right).
+        Returns float('inf') for each axis if no rays fall in that window.
+        """
+        if not self._last_scan_ranges:
+            return float('inf'), float('inf'), float('inf')
+
+        # Outside physical scan arc — no rays exist, treat as dead zone
+        if abs(center_deg) > SCAN_HALF_ARC_DEG:
+            return float('inf'), float('inf'), float('inf')
+
+        center_rad = math.radians(center_deg)
+        window_rad = math.radians(window_deg)
+        perp_left_rad  = center_rad + math.pi / 2
+        perp_right_rad = center_rad - math.pi / 2
+
+        fwd_min   = float('inf')
+        left_min  = float('inf')
+        right_min = float('inf')
+        fwd_count = 0
+
+        for i, r in enumerate(self._last_scan_ranges):
+            if not (self._last_range_min <= r <= self._last_range_max):
+                continue
+
+            raw_angle = self._last_angle_min + i * self._last_angle_increment
+            angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+            if LIDAR_MIRROR:
+                angle = -angle
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+
+            def _angular_diff(a: float, b: float) -> float:
+                d = abs(a - b)
+                return d if d <= math.pi else 2 * math.pi - d
+
+            if _angular_diff(angle, center_rad) <= window_rad:
+                fwd_min = min(fwd_min, r)
+                fwd_count += 1
+            if _angular_diff(angle, perp_left_rad) <= window_rad:
+                left_min = min(left_min, r)
+            if _angular_diff(angle, perp_right_rad) <= window_rad:
+                right_min = min(right_min, r)
+
+        if fwd_count == 0:
+            fwd_min = float('inf')   # dead zone — no data
+
+        return fwd_min, left_min, right_min
+
+    def refine_direction(
+        self,
+        coarse_deg: float,
+        search_half_deg: float = 20.0,
+        step_deg: float = 5.0,
+    ) -> float:
+        """
+        Sub-sector refinement: scan ±search_half_deg around coarse_deg at step_deg
+        resolution using raw LiDAR rays instead of aggregated sectors.
+
+        Scoring per candidate:
+            score = clearance * 0.6 + side_width * 0.2 - 0.4 * angle_penalty
+
+        Returns the refined angle (degrees, + = left, - = right).
+        Logs the adjustment when the direction changes.
+        """
+        if not self._last_scan_ranges:
+            return coarse_deg
+
+        MIN_FWD = ROBOT_LENGTH_M / 2 + ROBOT_CLEARANCE_M  # must clear front
+        _MAX_S = 2.5
+        WINDOW_DEG = step_deg / 2  # ray-window = half a step (~2.5°)
+
+        best_angle = coarse_deg
+        best_score = -float('inf')
+
+        cand = coarse_deg - search_half_deg
+        while cand <= coarse_deg + search_half_deg + 0.01:
+            # Skip candidates outside the physical scan arc
+            if abs(cand) > SCAN_HALF_ARC_DEG - WINDOW_DEG:
+                cand += step_deg
+                continue
+
+            fwd, left, right = self._directional_clearance(cand, WINDOW_DEG)
+
+            if fwd == float('inf'):
+                # Dead zone — skip, don't treat as open space
+                cand += step_deg
+                continue
+
+            if fwd < MIN_FWD:
+                cand += step_deg
+                continue
+
+            side_score = min(left, right, _MAX_S)
+            angle_penalty = abs(cand) / 180.0
+            score = min(fwd, _MAX_S) * 0.6 + side_score * 0.2 - 0.4 * angle_penalty
+
+            if score > best_score:
+                best_score = score
+                best_angle = cand
+
+            cand += step_deg
+
+        best_angle = round(best_angle, 1)
+        if abs(best_angle - coarse_deg) >= step_deg / 2:
+            logger.info(
+                f"🔍 Refined angle: {coarse_deg:+.0f}° → {best_angle:+.0f}° "
+                f"(score={best_score:.3f})"
+            )
+
+        return best_angle
+
     def get_sector_summary(self) -> str:
         """Human-readable summary of 360° LiDAR for logging."""
-        labels = ["Front", "F-Left", "Left", "B-Left", "Back", "B-Right",
-                   "Right", "F-Right"]  # 8 compass labels for 12 sectors
         lines = []
         for s in range(NUM_SECTORS):
             center_deg = s * SECTOR_DEG + SECTOR_DEG / 2
