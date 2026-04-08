@@ -78,8 +78,34 @@ class Nav2Client:
     def feedback(self) -> Dict[str, Any]:
         return self._nav_feedback
 
+    def inject_ros(self, ros: roslibpy.Ros) -> None:
+        """Accept pre-connected roslibpy.Ros from ensure_ros() singleton.
+        Avoids spawning a second Twisted factory that conflicts with camera/odom/LiDAR.
+        ActionClient is NOT created here — its constructor waits for Nav2 status topic
+        and will block/fail if Nav2 isn't running yet at Gateway startup time.
+        ActionClient is created lazily in connect() when navigation is first requested."""
+        self._ros = ros
+        self._connected = True
+        logger.info("Nav2 client using shared ROSBridge connection")
+
     async def connect(self) -> bool:
         """Connect to ROSBridge and set up Nav2 action client."""
+        # If ros was already injected via inject_ros(), create ActionClient lazily here.
+        # This avoids blocking at startup — ActionClient is only created when navigation
+        # is actually needed (i.e. when navigate_to_pose() is first called).
+        if self._ros and self._ros.is_connected:
+            if self._action_client is None:
+                try:
+                    self._action_client = roslibpy.actionlib.ActionClient(
+                        self._ros,
+                        "/navigate_to_pose",
+                        "nav2_msgs/NavigateToPose",
+                    )
+                except Exception as e:
+                    logger.warning(f"Nav2 ActionClient setup failed (Nav2 not ready?): {e}")
+                    return False
+            self._connected = True
+            return True
         try:
             host_port = self._url.replace("ws://", "").split("/")[0]
             host, port = host_port.split(":")
@@ -148,7 +174,7 @@ class Nav2Client:
                 "distance_remaining": float,
             }
         """
-        if not self.connected:
+        if not self.connected or self._action_client is None:
             success = await self.connect()
             if not success:
                 return {"success": False, "status": "CONNECTION_FAILED", "duration": 0}
@@ -182,6 +208,9 @@ class Nav2Client:
         result_event = asyncio.Event()
         result_data = {"success": False, "status": "TIMEOUT", "duration": 0}
         start_time = time.monotonic()
+        # Capture the running event loop so roslibpy callbacks can signal it
+        # thread-safely (they fire from a different thread than asyncio's loop).
+        loop = asyncio.get_event_loop()
 
         def _on_feedback(fb):
             self._nav_status = self.STATUS_EXECUTING
@@ -211,7 +240,9 @@ class Nav2Client:
                 "distance_remaining": 0,
             }
             self._nav_status = self.STATUS_SUCCEEDED
-            result_event.set()
+            # Use call_soon_threadsafe: this callback fires from roslibpy's thread,
+            # not the asyncio loop thread. Direct result_event.set() is not safe.
+            loop.call_soon_threadsafe(result_event.set)
 
         goal_msg.on("feedback", _on_feedback)
         goal_msg.on("result", _on_result)
@@ -222,12 +253,13 @@ class Nav2Client:
 
         logger.info("Nav2 goal sent, waiting for result...")
 
-        # Wait for result or timeout
+        # Wait for result or timeout.
+        # Previously this used run_in_executor(None, result_event.wait) which is
+        # wrong: asyncio.Event.wait is a coroutine method — calling it in an
+        # executor returns a coroutine object immediately, resolving the future
+        # instantly and always producing TIMEOUT/failure.
         try:
-            await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, result_event.wait),
-                timeout=timeout,
-            )
+            await asyncio.wait_for(result_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             elapsed = time.monotonic() - start_time
             logger.warning(f"Nav2 navigation timed out after {elapsed:.1f}s")
@@ -266,7 +298,7 @@ class Nav2Client:
         qz = math.sin(theta / 2.0)
         qw = math.cos(theta / 2.0)
         msg = {
-            "header": {"frame_id": "map"},
+            "header": {"frame_id": "map", "stamp": {"sec": 0, "nanosec": 0}},
             "pose": {
                 "pose": {
                     "position": {"x": x, "y": y, "z": 0.0},
@@ -296,21 +328,20 @@ class Nav2Client:
             )
             result_event = asyncio.Event()
             state = {"active": False}
+            loop = asyncio.get_event_loop()
 
             def _on_response(resp):
                 # current_state.label == "active"
                 cs = resp.get("current_state", {})
                 state["active"] = cs.get("label", "") == "active"
-                result_event.set()
+                loop.call_soon_threadsafe(result_event.set)
 
             request = roslibpy.ServiceRequest({})
-            service.call(request, callback=_on_response, errback=lambda e: result_event.set())
+            service.call(request, callback=_on_response,
+                         errback=lambda e: loop.call_soon_threadsafe(result_event.set))
 
             try:
-                await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, result_event.wait),
-                    timeout=3.0,
-                )
+                await asyncio.wait_for(result_event.wait(), timeout=3.0)
             except asyncio.TimeoutError:
                 pass
 

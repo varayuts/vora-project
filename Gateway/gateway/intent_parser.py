@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 #   - Max linear: 0.9 m/s, recommended: 0.15 m/s
 #   - Max angular: ~1.5 rad/s, recommended: 0.50 rad/s
 #   - Calibration: 0.85 (ชดเชย inertia ของ Mecanum wheel)
-LINEAR_SPEED = 0.15  # m/s (ค่า default ที่ปลอดภัยสำหรับ MyAGV 2023)
+LINEAR_SPEED = 0.15  # m/s (increased from 0.10 — safe with LiDAR check every 0.1s)
 ANGULAR_SPEED = 0.50  # rad/s (ค่า default ตาม spec ของ Elephant Robotics)
 ROTATION_CALIBRATION = 0.95   # Increased from 0.87 — was undershooting 10-20°
 

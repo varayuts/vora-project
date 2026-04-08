@@ -48,14 +48,16 @@ class CameraStream:
         self._image_sub: Optional[roslibpy.Topic] = None
         self._compressed_sub: Optional[roslibpy.Topic] = None
         self._camera_compressed_sub: Optional[roslibpy.Topic] = None
-        
+
         # Latest frame (JPEG bytes)
         self._latest_frame: Optional[bytes] = None
         self._frame_timestamp: float = 0
         self._frame_count: int = 0
         self._connected: bool = False
         self._running: bool = False
-        
+        # If False, the ros connection was passed in from outside — do NOT close it.
+        self._ros_owned: bool = True
+
         # Lock for thread-safe frame access
         self._lock = threading.Lock()
     
@@ -208,25 +210,38 @@ class CameraStream:
         except Exception as e:
             logger.error(f"❌ Compressed frame error: {e}")
     
-    def start(self):
-        """Start camera subscription in background thread with auto-retry."""
+    def start(self, ros=None):
+        """Start camera subscription in background thread with auto-retry.
+
+        If `ros` is provided (a connected roslibpy.Ros shared with other components),
+        the camera will use it directly and skip creating its own Twisted factory.
+        The caller retains ownership — CameraStream will NOT close the shared ros.
+        """
         if self._running:
             return
-        
+
+        if ros is not None:
+            self._ros = ros
+            self._connected = ros.is_connected
+            self._ros_owned = False  # borrowed — don't close on cleanup
+            logger.info("📷 CameraStream using shared ROSBridge connection")
+
         self._running = True
-        
+
         def _run():
             retry_delay = 5  # seconds
             max_retry_delay = 30
-            
+
             while self._running:
-                # Try to connect
-                if not self._connect_ros():
-                    logger.warning(f"⏳ Camera will retry in {retry_delay}s...")
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 1.5, max_retry_delay)
-                    continue
-                
+                # If ros was provided externally but dropped, fall back to own connection
+                if not (self._ros and self._ros.is_connected):
+                    self._connected = False
+                    if not self._connect_ros():
+                        logger.warning(f"⏳ Camera will retry in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 1.5, max_retry_delay)
+                        continue
+
                 # Reset retry delay on success
                 retry_delay = 5
                 
@@ -276,7 +291,7 @@ class CameraStream:
         logger.info("🎥 Camera stream started (with auto-retry)")
     
     def _cleanup_ros(self):
-        """Cleanup ROS connections for reconnect."""
+        """Cleanup ROS subscriptions and (if owned) the ros connection itself."""
         try:
             if self._image_sub:
                 self._image_sub.unsubscribe()
@@ -287,11 +302,15 @@ class CameraStream:
             if self._camera_compressed_sub:
                 self._camera_compressed_sub.unsubscribe()
                 self._camera_compressed_sub = None
-            if self._ros:
+            if self._ros and self._ros_owned:
                 try:
                     self._ros.close()
-                except:
+                except Exception:
                     pass
+                self._ros = None
+            elif not self._ros_owned:
+                # Don't close borrowed connection — just clear our ref so _run loop
+                # can detect it's gone and fall back to creating its own connection.
                 self._ros = None
             self._connected = False
         except Exception as e:
@@ -300,16 +319,16 @@ class CameraStream:
     def stop(self):
         """Stop camera subscription."""
         self._running = False
-        
+
         if self._image_sub:
             self._image_sub.unsubscribe()
         if self._compressed_sub:
             self._compressed_sub.unsubscribe()
         if self._camera_compressed_sub:
             self._camera_compressed_sub.unsubscribe()
-        if self._ros and self._ros.is_connected:
+        if self._ros and self._ros.is_connected and self._ros_owned:
             self._ros.close()
-        
+
         self._connected = False
         logger.info("🛑 Camera stream stopped")
     
@@ -352,11 +371,11 @@ def get_camera() -> CameraStream:
     return _camera
 
 
-def start_camera():
-    """Start camera stream."""
+def start_camera(ros=None):
+    """Start camera stream. Pass `ros` to reuse a shared ROSBridge connection."""
     cam = get_camera()
     if not cam._running:
-        cam.start()
+        cam.start(ros=ros)
     return cam
 
 

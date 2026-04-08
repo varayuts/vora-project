@@ -62,6 +62,15 @@ _robot_pose = {
 
 _object_markers: list = []   # [{name, x, y, zone, last_seen, confidence}, ...]
 
+# Trail history: accumulated from pose pushes (survives page refresh)
+_trail_history: list = []    # [{x, y, t}, ...]
+_TRAIL_MAX = 2000
+_trail_last_x = 0.0
+_trail_last_y = 0.0
+
+# Semantic map annotations (pushed from Gateway)
+_annotations: dict = {"zones": [], "landmarks": []}
+
 # Raw occupancy grid (grayscale, cropped) for navigation checks
 _occupancy_grid = None  # numpy array: 0=wall, 254=free, 205=unknown
 
@@ -200,10 +209,12 @@ async def get_map_info():
 
 @router.get("/state")
 async def get_map_state():
-    """Real-time state for webapp canvas: robot pose + object markers."""
+    """Real-time state for webapp canvas: robot pose + object markers + trail."""
     return JSONResponse({
         "robot": _robot_pose,
         "objects": _object_markers,
+        "trail": _trail_history[-500:],  # last 500 points for rendering
+        "annotations": _annotations,
         "map": {
             "width": _map_info.get("width", 0),
             "height": _map_info.get("height", 0),
@@ -216,16 +227,27 @@ async def get_map_state():
 @router.post("/pose")
 async def push_robot_pose(request: Request):
     """Gateway pushes robot pose from /odom."""
-    global _robot_pose
+    global _robot_pose, _trail_last_x, _trail_last_y
     try:
         data = await request.json()
+        x = float(data.get("x", 0))
+        y = float(data.get("y", 0))
         _robot_pose = {
-            "x": float(data.get("x", 0)),
-            "y": float(data.get("y", 0)),
+            "x": x,
+            "y": y,
             "theta": float(data.get("theta", 0)),
             "source": data.get("source", "unknown"),
             "timestamp": time.time(),
         }
+        # Accumulate trail if robot moved >2cm
+        dx = x - _trail_last_x
+        dy = y - _trail_last_y
+        if dx * dx + dy * dy > 0.0004:  # 0.02m squared
+            _trail_history.append({"x": round(x, 3), "y": round(y, 3), "t": time.time()})
+            if len(_trail_history) > _TRAIL_MAX:
+                _trail_history.pop(0)
+            _trail_last_x = x
+            _trail_last_y = y
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -330,6 +352,117 @@ async def is_position_free(request: Request):
     px, py = _world_to_pixel(wx, wy)
     occupied = _is_occupied(px, py, margin=3)
     return JSONResponse({"free": not occupied, "pixel": [px, py]})
+
+
+@router.post("/relocalize")
+async def relocalize(request: Request):
+    """
+    Manual relocalization: set robot pose on AMCL.
+    Forwards to Gateway via pipeline WebSocket.
+    Body: {"x": float, "y": float, "theta": float}
+    """
+    global _robot_pose, _trail_last_x, _trail_last_y
+    try:
+        data = await request.json()
+        x = float(data.get("x", 0))
+        y = float(data.get("y", 0))
+        theta = float(data.get("theta", 0))
+    except (KeyError, TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "need x, y, theta"}, status_code=400)
+
+    # Immediately update server-side pose for responsive UI
+    _robot_pose = {
+        "x": x, "y": y, "theta": theta,
+        "source": "manual", "timestamp": time.time(),
+    }
+    # Reset trail tracking anchor
+    _trail_last_x = x
+    _trail_last_y = y
+
+    # Forward to Gateway via pipeline WebSocket
+    sent = False
+    try:
+        from .pipeline_router import gateway_connections
+        for robot_id, ws in list(gateway_connections.items()):
+            try:
+                await ws.send_json({
+                    "type": "command",
+                    "cmd": "relocalize",
+                    "params": {"x": x, "y": y, "theta": theta},
+                    "priority": 1,
+                })
+                sent = True
+                logger.info(f"📍 Relocalize sent to {robot_id}: x={x:.2f} y={y:.2f}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to send relocalize to {robot_id}: {e}")
+    except ImportError:
+        logger.warning("⚠️ pipeline_router not available — pose updated locally only")
+
+    return JSONResponse({
+        "ok": True,
+        "sent_to_gateway": sent,
+        "pose": {"x": x, "y": y, "theta": theta},
+    })
+
+
+# ── Semantic Map Annotations ─────────────────────────────────────────
+
+@router.post("/annotations/push")
+async def push_annotations(request: Request):
+    """Gateway pushes semantic map annotations here."""
+    global _annotations
+    try:
+        _annotations = await request.json()
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.get("/annotations")
+async def get_annotations():
+    """Return cached annotations (pushed from Gateway)."""
+    return JSONResponse(_annotations)
+
+
+async def _forward_to_gateway(path: str, json_data=None, method: str = "POST"):
+    """Forward a request to Gateway and return the response."""
+    import httpx
+    from app.core.settings import Settings
+    gw_url = Settings().GATEWAY_URL
+    url = f"{gw_url}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            if method == "DELETE":
+                r = await client.delete(url)
+            else:
+                r = await client.post(url, json=json_data)
+        return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+
+@router.post("/annotations/zone")
+async def proxy_upsert_zone(request: Request):
+    """Proxy: create/update zone on Gateway."""
+    return await _forward_to_gateway("/annotations/zone", await request.json())
+
+
+@router.delete("/annotations/zone/{zone_id}")
+async def proxy_delete_zone(zone_id: str):
+    """Proxy: delete zone on Gateway."""
+    return await _forward_to_gateway(f"/annotations/zone/{zone_id}", method="DELETE")
+
+
+@router.post("/annotations/landmark")
+async def proxy_upsert_landmark(request: Request):
+    """Proxy: create/update landmark on Gateway."""
+    return await _forward_to_gateway("/annotations/landmark", await request.json())
+
+
+@router.delete("/annotations/landmark/{lm_id}")
+async def proxy_delete_landmark(lm_id: str):
+    """Proxy: delete landmark on Gateway."""
+    return await _forward_to_gateway(f"/annotations/landmark/{lm_id}", method="DELETE")
 
 
 # ── Load map on import ────────────────────────────────────────────────

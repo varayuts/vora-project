@@ -95,7 +95,7 @@ Examples:
     parser.add_argument("--gateway-ws", required=True, help="Gateway WebSocket URL (e.g. ws://GATEWAY_IP:9001/gw/audio)")
     parser.add_argument("--lang", default="th", help="Language hint for STT (default: th)")
     parser.add_argument("--rate", type=int, default=16000, help="Target sample rate in Hz (default: 16000)")
-    parser.add_argument("--frames", type=int, default=2048, help="Frames per chunk (default: 2048 = 128ms @16kHz)")
+    parser.add_argument("--frames", type=int, default=512, help="Frames per chunk (default: 512 = 32ms @16kHz — lower = less latency)")
     parser.add_argument("--device", default=None, help='Input device name substring (e.g. "ReSpeaker", "Yeti GX")')
     parser.add_argument("--silence-threshold", type=int, default=400, help="RMS threshold for silence detection (default: 400)")
     parser.add_argument("--silence-duration", type=float, default=60.0, help="Seconds of silence before auto-stop (default: 60.0)")
@@ -163,12 +163,13 @@ Examples:
     def cb(indata, frames, time_info, status):
         """Audio callback - called for each audio chunk"""
         nonlocal silent_chunks, total_chunks
-        
+        _cb_enter = time.time()  # capture timestamp for latency tracking
+
         if status:
             # Uncomment for debugging audio issues
             # print(f"[AUDIO STATUS] {status}")
             pass
-        
+
         # Get mono audio
         mono_audio = indata[:, 0]
         
@@ -189,7 +190,7 @@ Examples:
         total_chunks += 1
         
         try:
-            audio_q.put_nowait((pcm16, silent_chunks))
+            audio_q.put_nowait((pcm16, silent_chunks, _cb_enter))
         except asyncio.QueueFull:
             # Drop frames if queue is full (prevents lag)
             pass
@@ -221,25 +222,27 @@ Examples:
                 
                 try:
                     while True:
-                        chunk_data, silent_count = await audio_q.get()
-                        
+                        chunk_data, silent_count, _capture_t = await audio_q.get()
+                        _queue_wait_ms = (time.time() - _capture_t) * 1000
+
                         # Check for silence timeout
                         if silence_enabled and silent_count >= silence_chunks_max:
                             print(f"\n[INFO] 🔇 Silence detected for {silence_duration}s - auto-stopping")
                             print(f"[INFO] Session duration: {time.time() - session_start:.1f}s")
                             print(f"[INFO] Total chunks sent: {chunks_sent}")
                             break
-                        
+
                         # Send chunk with latency tracking
                         send_start = time.time()
                         await ws.send(chunk_data)
                         send_latency = (time.time() - send_start) * 1000  # ms
-                        
+                        total_latency_ms = _queue_wait_ms + send_latency
+
                         chunks_sent += 1
-                        
+
                         # Logging
-                        if args.verbose and chunks_sent % 50 == 0:
-                            print(f"[LATENCY] Chunk #{chunks_sent}: send={send_latency:.1f}ms, silent={silent_count}/{silence_chunks_max}")
+                        if args.verbose and chunks_sent % 20 == 0:
+                            print(f"[LATENCY] #{chunks_sent}: queue={_queue_wait_ms:.1f}ms send={send_latency:.1f}ms total={total_latency_ms:.1f}ms silent={silent_count}/{silence_chunks_max}")
                         elif not args.verbose and time.time() - last_log_time > 5.0:
                             audio_time = chunks_sent * args.frames / device_sample_rate
                             print(f"[INFO] Sent {chunks_sent} chunks ({audio_time:.1f}s audio) | silent: {silent_count}/{silence_chunks_max}")

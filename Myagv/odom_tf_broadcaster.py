@@ -8,22 +8,33 @@ the odom → base_footprint TF transform.
 Needed because myagv_odometry_node publishes /odom topic
 but does NOT broadcast the TF transform that Nav2 requires.
 
+MyAGV hardware bug: /odom always has x=0, y=0 (only θ/yaw is valid).
+Fix: integrate /cmd_vel velocity to estimate x,y (dead reckoning).
+The odom→base_footprint TF uses integrated x,y + real θ from /odom.
+Also publishes /odom_fused topic for Nav2 bt_navigator odom_topic.
+
 Usage:
     python3 odom_tf_broadcaster.py
     # or
     ros2 run tf2_ros static_transform_publisher  ...  (for static only)
 """
 
+import math
+import sys
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Twist
 
 
 class OdomTFBroadcaster(Node):
-    def __init__(self):
+    def __init__(self, skip_odom_tf: bool = False):
         super().__init__("odom_tf_broadcaster")
+        # When True: skip odom→base_footprint TF (EKF handles it), only publish /odom_fused
+        self._skip_odom_tf = skip_odom_tf
+        if skip_odom_tf:
+            self.get_logger().info("--skip-odom-tf mode: /odom_fused only (EKF owns TF)")
         self._br = TransformBroadcaster(self)
         self._sub = self.create_subscription(
             Odometry, "/odom", self._odom_cb, 10
@@ -48,23 +59,48 @@ class OdomTFBroadcaster(Node):
         self._static_br.sendTransform(static_tf_msgs)
 
         # Publish initial odom → base_footprint immediately (identity)
-        # so tf2_echo can see the frame before first /odom arrives
-        init_t = TransformStamped()
-        init_t.header.stamp = self.get_clock().now().to_msg()
-        init_t.header.frame_id = "odom"
-        init_t.child_frame_id = "base_footprint"
-        init_t.transform.rotation.w = 1.0
-        self._br.sendTransform(init_t)
-
-        # Also publish at 10Hz until first /odom arrives
+        # so tf2_echo can see the frame before first /odom arrives.
+        # Skipped in --skip-odom-tf mode (EKF already owns this TF).
         self._got_odom = False
+        if not self._skip_odom_tf:
+            init_t = TransformStamped()
+            init_t.header.stamp = self.get_clock().now().to_msg()
+            init_t.header.frame_id = "odom"
+            init_t.child_frame_id = "base_footprint"
+            init_t.transform.rotation.w = 1.0
+            self._br.sendTransform(init_t)
+
+        # Also publish at 10Hz until first /odom arrives (only when owning the TF)
         self._init_timer = self.create_timer(0.1, self._publish_init_tf)
 
         self.get_logger().info("odom → base_footprint → base_link TF broadcaster started")
 
+        # Dead-reckoning state — MyAGV /odom has x=y=0 always; integrate cmd_vel instead
+        self._x = 0.0
+        self._y = 0.0
+        self._yaw = 0.0
+        self._last_dr_time = self.get_clock().now()
+        self._last_cmd = None  # most recent Twist (held between integration ticks)
+
+        # Publish corrected odom for Nav2 bt_navigator odom_topic
+        self._odom_fused_pub = self.create_publisher(Odometry, "/odom_fused", 10)
+
+        # Integration timer at 20 Hz — runs independently of cmd_vel arrival rate
+        self._dr_timer = self.create_timer(0.05, self._integrate_cb)
+
+        # cmd_vel safety watchdog: sends zero if no cmd_vel for >1s
+        self._cmd_vel_sub = self.create_subscription(
+            Twist, "/cmd_vel", self._cmd_vel_cb, 10
+        )
+        self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._last_cmd_vel_time = self.get_clock().now()
+        self._cmd_vel_active = False
+        self._stop_logged = False  # prevent repeated STOP logs
+        self._watchdog_timer = self.create_timer(0.5, self._watchdog_cb)
+
     def _publish_init_tf(self):
         """Keep publishing identity TF until real /odom data arrives."""
-        if self._got_odom:
+        if self._got_odom or self._skip_odom_tf:
             self._init_timer.cancel()
             return
         t = TransformStamped()
@@ -74,22 +110,88 @@ class OdomTFBroadcaster(Node):
         t.transform.rotation.w = 1.0
         self._br.sendTransform(t)
 
+    def _cmd_vel_cb(self, msg: Twist):
+        # Threshold 0.10 filters out Nav2 final-deceleration trailing commands
+        # (DWB sends ~0.06 m/s on the last cycle before stopping, which at 0.05
+        # threshold would re-arm the watchdog and cause a second stop).
+        speed = abs(msg.linear.x) + abs(msg.linear.y) + abs(msg.angular.z)
+        if speed > 0.10:
+            self._last_cmd_vel_time = self.get_clock().now()
+            self._cmd_vel_active = True
+            self._stop_logged = False  # new real motion, allow logging again
+        self._last_cmd = msg  # store for integration timer (all commands, including stop)
+
+    def _integrate_cb(self):
+        """Dead-reckoning: integrate cmd_vel at 20 Hz to estimate x,y displacement."""
+        if self._last_cmd is None:
+            return
+        now = self.get_clock().now()
+        dt = (now - self._last_dr_time).nanoseconds / 1e9
+        self._last_dr_time = now
+
+        vx = self._last_cmd.linear.x
+        vy = self._last_cmd.linear.y
+
+        # Only integrate if robot is actually moving and dt is sane
+        # (dt > 0.5 means node was paused/stalled — skip to avoid position jump)
+        if (abs(vx) + abs(vy) > 0.01) and (0.001 < dt < 0.5):
+            # Transform robot-frame velocity to world frame using current yaw
+            c = math.cos(self._yaw)
+            s = math.sin(self._yaw)
+            self._x += (c * vx - s * vy) * dt
+            self._y += (s * vx + c * vy) * dt
+
+    def _watchdog_cb(self):
+        if not self._cmd_vel_active:
+            return
+        elapsed = (self.get_clock().now() - self._last_cmd_vel_time).nanoseconds / 1e9
+        if elapsed > 1.0:
+            self._cmd_vel_pub.publish(Twist())
+            self._cmd_vel_active = False
+            if not self._stop_logged:
+                self.get_logger().warn("cmd_vel watchdog: motion stopped -> sending STOP")
+                self._stop_logged = True
+
     def _odom_cb(self, msg: Odometry):
         self._got_odom = True
-        t = TransformStamped()
-        t.header.stamp = msg.header.stamp
-        t.header.frame_id = "odom"
-        t.child_frame_id = "base_footprint"
-        t.transform.translation.x = msg.pose.pose.position.x
-        t.transform.translation.y = msg.pose.pose.position.y
-        t.transform.translation.z = msg.pose.pose.position.z
-        t.transform.rotation = msg.pose.pose.orientation
-        self._br.sendTransform(t)
+
+        # Extract yaw from real /odom orientation — this IS valid on MyAGV (θ works)
+        q = msg.pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self._yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        # Broadcast odom → base_footprint using dead-reckoning x,y + real θ.
+        # Skipped in --skip-odom-tf mode — EKF owns this TF.
+        if not self._skip_odom_tf:
+            t = TransformStamped()
+            t.header.stamp = msg.header.stamp
+            t.header.frame_id = "odom"
+            t.child_frame_id = "base_footprint"
+            t.transform.translation.x = self._x
+            t.transform.translation.y = self._y
+            t.transform.translation.z = 0.0
+            t.transform.rotation = msg.pose.pose.orientation
+            self._br.sendTransform(t)
+
+        # Publish /odom_fused for Nav2 bt_navigator (progress checker needs x,y)
+        fused = Odometry()
+        fused.header.stamp = msg.header.stamp
+        fused.header.frame_id = "odom"
+        fused.child_frame_id = "base_footprint"
+        fused.pose.pose.position.x = self._x
+        fused.pose.pose.position.y = self._y
+        fused.pose.pose.position.z = 0.0
+        fused.pose.pose.orientation = msg.pose.pose.orientation
+        fused.twist.twist.linear.x = msg.twist.twist.linear.x
+        fused.twist.twist.angular.z = msg.twist.twist.angular.z
+        self._odom_fused_pub.publish(fused)
 
 
 def main():
-    rclpy.init()
-    node = OdomTFBroadcaster()
+    skip_tf = "--skip-odom-tf" in sys.argv
+    rclpy.init(args=[a for a in sys.argv if a != "--skip-odom-tf"])
+    node = OdomTFBroadcaster(skip_odom_tf=skip_tf)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

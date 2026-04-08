@@ -17,6 +17,7 @@ class MotionPublisher:
         self._topic = None
         self._mqtt = None
         self.post_motion_hook = None  # callable(linear_x, angular_z, actual_duration)
+        self._cancel_checker = None   # callable() -> bool, set by search to allow cancel during motion
         if USE_MQTT:
             try:
                 import paho.mqtt.client as mqtt
@@ -27,19 +28,12 @@ class MotionPublisher:
                 print("MQTT init failed:", e)
 
     async def _ensure_ros(self):
-        if self._ros and self._ros.is_connected:
-            return
-        host_port = self.rosbridge_url.replace("ws://","").split("/")[0]
-        host, port = host_port.split(":")
-        self._ros = roslibpy.Ros(host=host, port=int(port))
-        self._ros.run()
-        for _ in range(50):
-            if self._ros.is_connected:
-                break
-            await asyncio.sleep(0.1)
-        if not self._ros.is_connected:
-            raise RuntimeError("Cannot connect to rosbridge")
-        self._topic = roslibpy.Topic(self._ros, self.cmd_vel_topic, "geometry_msgs/Twist")
+        # Reuse the module-level singleton instead of creating a private roslibpy.Ros.
+        # This prevents MotionPublisher from adding a second Twisted factory on startup.
+        ros = await ensure_ros(self.rosbridge_url)
+        if ros is not self._ros or self._topic is None:
+            self._ros = ros
+            self._topic = roslibpy.Topic(self._ros, self.cmd_vel_topic, "geometry_msgs/Twist")
 
     def _twist(self, lx, az):
         return {"linear": {"x": lx, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": az}}
@@ -62,7 +56,7 @@ class MotionPublisher:
         print(f"✅ Sent to /vora/command: {command_json}")
         await asyncio.sleep(0.5)  # Wait for command to be processed
 
-    async def exec_motion(self, cmd: Dict[str, Any], obstacle_checker=None, post_motion_hook=None):
+    async def exec_motion(self, cmd: Dict[str, Any], obstacle_checker=None, post_motion_hook=None, rear_obstacle_checker=None):
         # NEW: Send to Command Executor instead of direct /cmd_vel
         if cmd.get("type") == "stop":
             await self.send_to_command_executor("stop")
@@ -97,13 +91,26 @@ class MotionPublisher:
             
             interrupted = False
             for i in range(loop_count):
-                # Real-time obstacle interrupt: check LiDAR every iteration
-                # Only applies to forward motion (lx > 0) — don't interrupt rotations or backward
-                if obstacle_checker and lx > 0 and i % 3 == 0:  # check every ~0.3s
+                # Real-time obstacle interrupt: check LiDAR EVERY iteration (~0.1s)
+                if obstacle_checker and lx > 0:
+                    # Forward motion: check front cone (±16°–60°)
                     if obstacle_checker():
                         print(f"🛑 LIDAR INTERRUPT at step {i}/{loop_count} — obstacle detected during motion!")
                         interrupted = True
                         break
+
+                if rear_obstacle_checker and (lx < 0 or (abs(az) > 0.01 and abs(lx) < 0.01)):
+                    # Backward or pure rotation: check rear/side sectors (±90°–165°)
+                    if rear_obstacle_checker():
+                        print(f"🛑 REAR OBSTACLE at step {i}/{loop_count} — rear/side obstacle during {'backward' if lx < 0 else 'rotation'}!")
+                        interrupted = True
+                        break
+
+                # Cancel check: allow search cancellation to interrupt motion
+                if self._cancel_checker and self._cancel_checker():
+                    print(f"🛑 CANCEL INTERRUPT at step {i}/{loop_count}")
+                    interrupted = True
+                    break
                 
                 self._topic.publish(self._twist(lx, az))
                 await asyncio.sleep(0.1)
@@ -169,23 +176,55 @@ class WaypointSender:
             goal.cancel()
             await asyncio.sleep(0.2)
 
-# Singleton ROS connection สำหรับ LLM Planner (ป้องกัน connection leak)
+# Singleton ROS connection สำหรับทุก component (ป้องกัน connection leak + duplicate factories)
 _shared_ros: roslibpy.Ros = None
+# Lock สร้างแบบ lazy เพื่อหลีกเลี่ยง "no running event loop" ตอน import time
+_ensure_ros_lock: asyncio.Lock = None
+
+def _get_ensure_ros_lock() -> asyncio.Lock:
+    global _ensure_ros_lock
+    if _ensure_ros_lock is None:
+        _ensure_ros_lock = asyncio.Lock()
+    return _ensure_ros_lock
 
 async def ensure_ros(rosbridge_url: str) -> roslibpy.Ros:
-    """Singleton ROS connection — ป้องกัน connection leak ที่ทำให้ delay สะสม"""
+    """Singleton ROS connection — ONE Twisted factory, ป้องกัน race condition จาก concurrent callers.
+
+    CRITICAL: Twisted reactor เป็น global singleton ที่ start ได้แค่ครั้งเดียวต่อ process
+    หลังจาก terminate() แล้ว ไม่สามารถ restart ได้ → ReactorNotRestartable
+    ดังนั้น:
+      1. สร้าง roslibpy.Ros() และเรียก run() แค่ครั้งเดียว (ตอน _shared_ros is None)
+      2. ห้ามเรียก terminate() — roslibpy จัดการ WebSocket reconnect เองอัตโนมัติ
+      3. ถ้า _shared_ros มีอยู่แล้ว (แต่ยังไม่ connected) ให้รอ ไม่ต้องสร้างใหม่
+
+    Lock ป้องกัน race condition เมื่อหลาย asyncio task เรียก ensure_ros() พร้อมกัน
+    ก่อน connection ready — ทำให้มี factory เดียวเท่านั้น
+    """
     global _shared_ros
+    # Fast path — already connected (no lock needed)
     if _shared_ros and _shared_ros.is_connected:
         return _shared_ros
-    host_port = rosbridge_url.replace("ws://","").split("/")[0]
-    host, port = host_port.split(":")
-    _shared_ros = roslibpy.Ros(host=host, port=int(port))
-    _shared_ros.run()
-    for _ in range(50):
-        if _shared_ros.is_connected:
-            break
-        await asyncio.sleep(0.1)
-    if not _shared_ros.is_connected:
-        _shared_ros = None
-        raise RuntimeError("Cannot connect to rosbridge")
-    return _shared_ros
+    async with _get_ensure_ros_lock():
+        # Double-check inside lock (another task may have connected while we waited)
+        if _shared_ros and _shared_ros.is_connected:
+            return _shared_ros
+        host_port = rosbridge_url.replace("ws://","").split("/")[0]
+        host, port = host_port.split(":")
+        # Create Ros instance ONLY IF we don't have one yet.
+        # If _shared_ros exists but is disconnected, roslibpy is already retrying
+        # the WebSocket connection internally — just wait for it to reconnect.
+        # NEVER call terminate(): it kills the Twisted reactor permanently and the
+        # next run() call will throw ReactorNotRestartable.
+        if _shared_ros is None:
+            _shared_ros = roslibpy.Ros(host=host, port=int(port))
+            _shared_ros.run()  # Starts Twisted reactor + WebSocket (once per process)
+
+        for _ in range(50):
+            if _shared_ros.is_connected:
+                break
+            await asyncio.sleep(0.1)
+        if not _shared_ros.is_connected:
+            # Do NOT set _shared_ros = None — keep the instance so roslibpy
+            # continues retrying the WebSocket in the background.
+            raise RuntimeError("Cannot connect to rosbridge")
+        return _shared_ros

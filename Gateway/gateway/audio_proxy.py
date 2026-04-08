@@ -22,12 +22,15 @@ async def upstream_stt_proxy(server_ws: str, client_ws: WebSocket, upstream_init
             await upstream.send(json.dumps(upstream_init))
 
             # Task A: Loop รับ Audio Binary จาก Client (AGV) -> ส่งไป Server
-            # ✅ Optimized: Buffer small chunks and batch-send to reduce WS overhead
-            #    MyAGV sends many small chunks — batching reduces per-message latency across 2 WS hops
+            # Batching strategy: accumulate ~50ms before forwarding upstream.
+            # With 32ms chunks from MyAGV (--frames 512 @16kHz) this means we
+            # flush after ~1-2 chunks, keeping end-to-end proxy latency ≤ 80ms.
             async def client_to_server():
-                BATCH_BYTES = 6400   # ~200ms at 16kHz mono 16-bit
-                FLUSH_SEC   = 0.15   # Flush at most every 150ms
+                import time as _time
+                BATCH_BYTES = 1600   # ~50ms at 16kHz mono 16-bit (was 6400/200ms)
+                FLUSH_SEC   = 0.05   # Flush at most every 50ms (was 0.15/150ms)
                 buffer = bytearray()
+                _batch_start = _time.monotonic()
                 try:
                     while True:
                         try:
@@ -38,13 +41,21 @@ async def upstream_stt_proxy(server_ws: str, client_ws: WebSocket, upstream_init
                             buffer.extend(data)
                             # Send when buffer is large enough
                             if len(buffer) >= BATCH_BYTES:
+                                _send_t = _time.monotonic()
                                 await upstream.send(bytes(buffer))
+                                _proxy_ms = (_time.monotonic() - _batch_start) * 1000
+                                logger.debug(f"[PROXY] batch {len(buffer)}B sent, proxy_buf={_proxy_ms:.0f}ms")
                                 buffer = bytearray()
+                                _batch_start = _time.monotonic()
                         except asyncio.TimeoutError:
                             # Timeout → flush any accumulated data
                             if buffer:
+                                _flush_t = _time.monotonic()
                                 await upstream.send(bytes(buffer))
+                                _proxy_ms = (_flush_t - _batch_start) * 1000
+                                logger.debug(f"[PROXY] flush {len(buffer)}B, proxy_buf={_proxy_ms:.0f}ms")
                                 buffer = bytearray()
+                                _batch_start = _time.monotonic()
                 except WebSocketDisconnect:
                     if buffer:
                         try:
