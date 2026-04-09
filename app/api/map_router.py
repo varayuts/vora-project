@@ -71,6 +71,11 @@ _trail_last_y = 0.0
 # Semantic map annotations (pushed from Gateway)
 _annotations: dict = {"zones": [], "landmarks": []}
 
+# Mutation guard: block stale Gateway pushes for N seconds after any local CRUD mutation.
+# Prevents in-flight push from overwriting _annotations after a proxy delete/upsert.
+_ann_mutation_time: float = 0.0
+_ANN_PUSH_GRACE_SECS: float = 15.0
+
 # Raw occupancy grid (grayscale, cropped) for navigation checks
 _occupancy_grid = None  # numpy array: 0=wall, 254=free, 205=unknown
 
@@ -412,7 +417,17 @@ async def push_annotations(request: Request):
     """Gateway pushes semantic map annotations here."""
     global _annotations
     try:
-        _annotations = await request.json()
+        data = await request.json()
+        age = time.time() - _ann_mutation_time
+        if age < _ANN_PUSH_GRACE_SECS:
+            # A CRUD mutation happened recently — this push may have been captured BEFORE
+            # that mutation (in-flight race). Discard to avoid restoring deleted zones.
+            zone_ids = [z.get("id") for z in data.get("zones", [])]
+            logger.info(f"🛡️ [ann-push] Discarded stale push (mutation {age:.1f}s ago). Push zones: {zone_ids}")
+            return {"ok": True}
+        zone_ids = [z.get("id") for z in data.get("zones", [])]
+        logger.info(f"📥 [ann-push] Accepted Gateway push. Zones: {zone_ids}")
+        _annotations = data
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -434,35 +449,89 @@ async def _forward_to_gateway(path: str, json_data=None, method: str = "POST"):
         async with httpx.AsyncClient(timeout=5.0) as client:
             if method == "DELETE":
                 r = await client.delete(url)
+            elif method == "GET":
+                r = await client.get(url)
             else:
                 r = await client.post(url, json=json_data)
         return JSONResponse(r.json(), status_code=r.status_code)
     except Exception as e:
+        logger.warning(f"⚠️ [gw-proxy] {method} {path} failed: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+
+async def _refresh_annotations_cache():
+    """Fetch authoritative annotation state from Gateway and update server cache.
+
+    This is the ONLY correct way to update _annotations after a CRUD mutation.
+    Instead of surgically editing _annotations locally (which can diverge from
+    Gateway truth), we fetch the real state directly from the source of truth.
+    """
+    global _annotations
+    import httpx
+    from app.core.settings import Settings
+    gw_url = Settings().GATEWAY_URL
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{gw_url}/annotations")
+        if r.status_code == 200:
+            _annotations = r.json()
+            zone_ids = [z.get("id") for z in _annotations.get("zones", [])]
+            logger.info(f"🔄 [ann-cache] Refreshed from Gateway. Zones: {zone_ids}")
+        else:
+            logger.warning(f"⚠️ [ann-cache] Gateway GET /annotations returned {r.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ [ann-cache] Failed to refresh from Gateway: {e}")
 
 
 @router.post("/annotations/zone")
 async def proxy_upsert_zone(request: Request):
-    """Proxy: create/update zone on Gateway."""
-    return await _forward_to_gateway("/annotations/zone", await request.json())
+    """Proxy: create/update zone on Gateway, then refresh cache from Gateway."""
+    global _ann_mutation_time
+    _ann_mutation_time = time.time()
+    data = await request.json()
+    logger.info(f"📝 [ann-proxy] UPSERT zone '{data.get('id')}' — forwarding to Gateway")
+    result = await _forward_to_gateway("/annotations/zone", data)
+    if result.status_code == 200:
+        await _refresh_annotations_cache()
+    return result
 
 
 @router.delete("/annotations/zone/{zone_id}")
 async def proxy_delete_zone(zone_id: str):
-    """Proxy: delete zone on Gateway."""
-    return await _forward_to_gateway(f"/annotations/zone/{zone_id}", method="DELETE")
+    """Proxy: delete zone on Gateway, then refresh cache from Gateway."""
+    global _ann_mutation_time
+    _ann_mutation_time = time.time()
+    logger.info(f"🗑️ [ann-proxy] DELETE zone '{zone_id}' — forwarding to Gateway")
+    result = await _forward_to_gateway(f"/annotations/zone/{zone_id}", method="DELETE")
+    logger.info(f"🗑️ [ann-proxy] Gateway returned HTTP {result.status_code} for DELETE zone '{zone_id}'")
+    if result.status_code == 200:
+        await _refresh_annotations_cache()
+    return result
 
 
 @router.post("/annotations/landmark")
 async def proxy_upsert_landmark(request: Request):
-    """Proxy: create/update landmark on Gateway."""
-    return await _forward_to_gateway("/annotations/landmark", await request.json())
+    """Proxy: create/update landmark on Gateway, then refresh cache from Gateway."""
+    global _ann_mutation_time
+    _ann_mutation_time = time.time()
+    data = await request.json()
+    logger.info(f"📝 [ann-proxy] UPSERT landmark '{data.get('id')}' — forwarding to Gateway")
+    result = await _forward_to_gateway("/annotations/landmark", data)
+    if result.status_code == 200:
+        await _refresh_annotations_cache()
+    return result
 
 
 @router.delete("/annotations/landmark/{lm_id}")
 async def proxy_delete_landmark(lm_id: str):
-    """Proxy: delete landmark on Gateway."""
-    return await _forward_to_gateway(f"/annotations/landmark/{lm_id}", method="DELETE")
+    """Proxy: delete landmark on Gateway, then refresh cache from Gateway."""
+    global _ann_mutation_time
+    _ann_mutation_time = time.time()
+    logger.info(f"🗑️ [ann-proxy] DELETE landmark '{lm_id}' — forwarding to Gateway")
+    result = await _forward_to_gateway(f"/annotations/landmark/{lm_id}", method="DELETE")
+    if result.status_code == 200:
+        await _refresh_annotations_cache()
+    return result
 
 
 # ── Load map on import ────────────────────────────────────────────────

@@ -95,7 +95,7 @@ class SearchPlanner:
             # 3. Co-location: spatial_memory saw related landmark in this zone
             related = self._smem.find_related_locations(target, max_age_min=30)
             for rel in related:
-                rel_zone = self._smap.get_zone_at(rel.x, rel.y)
+                rel_zone = self._smap.get_zone_at(rel["x"], rel["y"])
                 if rel_zone and rel_zone.id == zone.id:
                     score += 3.0
                     reasons.append("co-location")

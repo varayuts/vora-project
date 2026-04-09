@@ -11,6 +11,7 @@ Landmarks represent fixed reference points (sofa, table, door, etc.).
 import json
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -33,6 +34,7 @@ class Zone:
     expected_objects: List[str] = field(default_factory=list)
     notes: str = ""
     color: str = "#3b82f6"
+    source: str = "seed"  # "seed" = pre-loaded default, "manual" = user-created
 
 
 @dataclass
@@ -57,10 +59,17 @@ class SemanticMap:
 
     # ── CRUD: Zones ──────────────────────────────────────────────
 
-    def add_zone(self, zone: Zone) -> None:
-        """Add or replace a zone (upsert by id)."""
+    def add_zone(self, zone: Zone) -> bool:
+        """Add or replace a zone (upsert by id). Returns True on success."""
+        old = self._zones.get(zone.id)
         self._zones[zone.id] = zone
-        self._save()
+        if not self._save():
+            if old:
+                self._zones[zone.id] = old
+            else:
+                self._zones.pop(zone.id, None)
+            return False
+        return True
 
     def update_zone(self, zone_id: str, updates: dict) -> Optional[Zone]:
         z = self._zones.get(zone_id)
@@ -73,11 +82,15 @@ class SemanticMap:
         return z
 
     def delete_zone(self, zone_id: str) -> bool:
-        if zone_id in self._zones:
-            del self._zones[zone_id]
-            self._save()
-            return True
-        return False
+        if zone_id not in self._zones:
+            return False
+        removed = self._zones.pop(zone_id)
+        if not self._save():
+            # Rollback: restore zone if file write failed
+            self._zones[zone_id] = removed
+            logger.error(f"❌ delete_zone rollback: restored '{zone_id}' after save failure")
+            return False
+        return True
 
     def get_zone(self, zone_id: str) -> Optional[Zone]:
         return self._zones.get(zone_id)
@@ -170,6 +183,7 @@ class SemanticMap:
                     expected_objects=zd.get("expected_objects", []),
                     notes=zd.get("notes", ""),
                     color=zd.get("color", "#3b82f6"),
+                    source=zd.get("source", "seed"),
                 )
                 self._zones[z.id] = z
             for ld in data.get("landmarks", []):
@@ -190,13 +204,30 @@ class SemanticMap:
         except Exception as e:
             logger.error(f"Failed to load semantic map: {e}")
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        """Persist to JSON. Returns True on verified write, False on failure."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            data = self.to_dict()
             with open(self._path, "w", encoding="utf-8") as f:
-                json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            # Verify: re-read and check zone count matches
+            with open(self._path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            expected_zones = len(data["zones"])
+            actual_zones = len(saved.get("zones", []))
+            if expected_zones != actual_zones:
+                logger.error(f"❌ semantic_map save VERIFICATION FAILED: "
+                             f"expected {expected_zones} zones, file has {actual_zones}")
+                return False
+            zone_ids = [z["id"] for z in saved["zones"]]
+            logger.info(f"💾 semantic_map saved: {actual_zones} zones {zone_ids}")
+            return True
         except Exception as e:
-            logger.error(f"Failed to save semantic map: {e}")
+            logger.error(f"❌ Failed to save semantic map: {e}")
+            return False
 
 
 # ── Singleton ────────────────────────────────────────────────────

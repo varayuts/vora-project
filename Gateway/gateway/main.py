@@ -1,6 +1,6 @@
 import os, asyncio, json, re, logging, math, time
 from typing import Optional, List, Dict
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -3714,6 +3714,7 @@ async def upsert_zone(request: Request):
         expected_objects=data.get("expected_objects", []),
         notes=data.get("notes", ""),
         color=data.get("color", "#3b82f6"),
+        source=data.get("source", "manual"),
     )
     semantic_map.add_zone(zone)
     logger.info(f"📝 Zone upserted: {zone.id} ({zone.label_th}) at ({zone.center_x:.2f}, {zone.center_y:.2f})")
@@ -3722,10 +3723,18 @@ async def upsert_zone(request: Request):
 
 @app.delete("/annotations/zone/{zone_id}")
 async def delete_zone_ep(zone_id: str):
-    """Delete a semantic zone."""
+    """Delete a semantic zone. Returns 500 if file write fails."""
     ok = semantic_map.delete_zone(zone_id)
-    logger.info(f"🗑️ Zone {'deleted' if ok else 'not found'}: {zone_id}")
-    return {"ok": ok}
+    remaining = [z.id for z in semantic_map.get_all_zones()]
+    logger.info(f"🗑️ Zone {'deleted' if ok else 'FAILED/not-found'}: {zone_id} | remaining zones: {remaining}")
+    if not ok and zone_id not in [z.id for z in semantic_map.get_all_zones()]:
+        # zone_id not found — not an error, just missing
+        return {"ok": False, "reason": "not_found"}
+    if not ok:
+        # delete_zone returned False due to save failure
+        from fastapi.responses import JSONResponse as GwJSONResponse
+        return GwJSONResponse({"ok": False, "reason": "save_failed"}, status_code=500)
+    return {"ok": True}
 
 
 @app.post("/annotations/landmark")

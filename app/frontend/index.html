@@ -1339,6 +1339,34 @@ body::after{
 }
 .relocalize-hint.show{display:block}
 
+/* Annotation modal */
+.annotation-modal{
+  display:none;position:fixed;inset:0;z-index:1000;
+  background:rgba(0,0,0,.6);align-items:center;justify-content:center;
+}
+.annotation-modal.show{display:flex}
+.annotation-modal-content{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:var(--sp-4);width:320px;max-width:90vw;
+}
+.annotation-modal-content h4{margin:0 0 var(--sp-3) 0;color:var(--text);font-size:var(--text-md)}
+.annotation-modal-content input,
+.annotation-modal-content textarea,
+.annotation-modal-content select{
+  width:100%;padding:6px 8px;margin-bottom:8px;border:1px solid var(--border2);
+  border-radius:var(--r-sm);background:var(--bg);color:var(--text);
+  font-family:var(--font);font-size:var(--text-xs);box-sizing:border-box;
+}
+.annotation-modal-content input[type="color"]{height:32px;padding:2px;cursor:pointer}
+.ann-btn-row{display:flex;gap:8px;margin-top:var(--sp-2)}
+.ann-btn-row button{
+  padding:6px 12px;border-radius:var(--r-sm);border:1px solid var(--border2);
+  background:var(--surface);color:var(--text2);font-size:var(--text-xs);cursor:pointer;
+  font-family:var(--font);transition:var(--transition);
+}
+.ann-btn-row button.primary{flex:1;background:var(--accent);color:#fff;border-color:var(--accent)}
+.ann-btn-row button.danger{background:#ef4444;color:#fff;border-color:#ef4444}
+
 /* ═══════════════════════════════════════════════════════════════
    LEGACY — Hidden legacy elements
 ═══════════════════════════════════════════════════════════════ */
@@ -1411,7 +1439,6 @@ body::after{
     <div class="status-dot" id="st-camera" title="Camera Feed"><span>Camera</span></div>
     <div class="status-dot" id="st-gw" title="Gateway (Robot)"><span>Gateway</span></div>
     <button class="btn-icon" id="btn-tts-toggle" title="Toggle TTS / เสียงตอบกลับ" aria-label="Toggle TTS">🔊</button>
-    <button class="btn-icon" id="btn-telemetry" title="Robot Telemetry" aria-label="Telemetry">📊</button>
     <button class="btn-icon" id="btn-memory" title="Object Memory / ความจำ" aria-label="Object Memory">🧠</button>
     <button class="btn-icon" id="btn-dpad" title="Manual D-Pad Control" aria-label="D-Pad">🎮</button>
     <button class="btn-icon" id="btn-settings" title="Settings" aria-label="Settings">⚙️</button>
@@ -1459,18 +1486,6 @@ body::after{
         <div class="telem-row">
           <span class="telem-label">Source</span>
           <span class="telem-value" id="telem-pos-src" style="font-size:9px">--</span>
-        </div>
-      </div>
-      <div class="telem-compact">
-        <h4>⚡ Power</h4>
-        <div class="telem-row">
-          <span class="telem-label">Battery</span>
-          <span class="telem-value" id="telem-batt">-- %</span>
-        </div>
-        <div class="telem-bar"><div class="telem-bar-fill" id="telem-batt-bar" style="width:0%;background:var(--green)"></div></div>
-        <div class="telem-row" style="margin-top:4px">
-          <span class="telem-label">Voltage</span>
-          <span class="telem-value" id="telem-volt">-- V</span>
         </div>
       </div>
       <div class="telem-compact">
@@ -1709,12 +1724,42 @@ body::after{
     <div class="map-toolbar">
       <button id="btn-set-pose" onclick="toggleSetPoseMode()" title="Click map to set robot pose">📍 Set Pose</button>
       <button onclick="resetPoseOrigin()" title="Reset pose to origin">🔄 Reset</button>
+      <button id="btn-add-zone" onclick="toggleAnnotationMode('zone')" title="Click map to add semantic zone">🔵 Zone</button>
+      <button id="btn-add-landmark" onclick="toggleAnnotationMode('landmark')" title="Click map to add landmark">📌 Landmark</button>
     </div>
     <button class="map-close" onclick="toggleExpandedMap()" aria-label="Close map">✕</button>
   </div>
   <div class="map-canvas-wrap">
     <canvas id="map-canvas-big" width="800" height="800"></canvas>
     <div class="relocalize-hint" id="relocalize-hint">🖱️ Click on map to set robot position</div>
+  </div>
+</div>
+
+<!-- Annotation Modal -->
+<div class="annotation-modal" id="annotation-modal">
+  <div class="annotation-modal-content">
+    <h4 id="ann-title">Add Zone</h4>
+    <p id="ann-source-badge" style="display:none;margin:0 0 8px 0;font-size:11px;color:var(--text-muted)"></p>
+    <form id="ann-form" onsubmit="saveAnnotation(event)">
+      <input id="ann-id" placeholder="ID (e.g. kitchen)" required />
+      <input id="ann-label-th" placeholder="Thai label" />
+      <input id="ann-label-en" placeholder="English label" />
+      <div id="ann-zone-fields">
+        <input id="ann-radius" type="number" step="0.1" value="0.8" min="0.1" placeholder="Radius (m)" />
+        <input id="ann-color" type="color" value="#3b82f6" />
+        <textarea id="ann-expected" placeholder="Expected objects (comma-sep)" rows="2"></textarea>
+      </div>
+      <div id="ann-lm-fields" style="display:none">
+        <select id="ann-zone-link"><option value="">No zone</option></select>
+        <input id="ann-category" placeholder="Category (furniture, door...)" />
+      </div>
+      <textarea id="ann-notes" placeholder="Notes" rows="2"></textarea>
+      <div class="ann-btn-row">
+        <button type="button" onclick="closeAnnotationModal()">Cancel</button>
+        <button type="button" class="danger" onclick="deleteAnnotation()" id="ann-delete-btn" style="display:none">Delete</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1814,8 +1859,6 @@ let lastFpsTime  = Date.now();
 let robotPos     = { x: 0, y: 0, th: 0 };
 let trailPoints  = [];
 let startTime    = Date.now();
-let _battPct     = null;
-let _battVolt    = null;
 let _lastFrameBytes = 0;
 
 // ── Auto-resize textarea ────────────────────────────────────
@@ -1867,7 +1910,6 @@ function setupHeaderButtons() {
   $('btn-settings').onclick = openSettings;
   $('btn-memory').onclick = openMemory;
   $('btn-tts-toggle').onclick = toggleTTSMute;
-  if ($('btn-telemetry')) $('btn-telemetry').onclick = openTelemetry;
   $('memory-overlay').onclick = closeMemory;
   if ($('telemetry-overlay')) $('telemetry-overlay').onclick = closeTelemetry;
   camMini.onclick = openCameraFull;
@@ -3089,22 +3131,8 @@ async function startTelemetryLoop() {
       $('telem-gpu').className = 'telem-value ' + (data.gpu_enabled ? 'good' : 'warn');
     }
   } catch(e) {}
-  // Fetch battery from gateway if available
-  fetchBattery();
 }
 
-async function fetchBattery() {
-  if (!gwAvailable) return;
-  try {
-    const r = await fetch(`${GW_BASE}/telemetry/battery`, {signal: AbortSignal.timeout(3000)});
-    if (r.ok) {
-      const d = await r.json();
-      if (d.percentage !== undefined) _battPct = Math.round(d.percentage);
-      if (d.voltage !== undefined) _battVolt = d.voltage;
-    }
-  } catch(e) { /* Gateway may not have battery endpoint — keep null */ }
-}
-setInterval(fetchBattery, 30000);
 
 function refreshTelemetry() {
   const fmtPing = (ms) => {
@@ -3122,20 +3150,6 @@ function refreshTelemetry() {
 
   $('telem-fps').textContent = cameraFps > 0 ? `${cameraFps} fps` : '--';
   $('telem-fps').className = 'telem-value ' + (cameraFps >= 5 ? 'good' : cameraFps > 0 ? 'warn' : '');
-
-  // Battery — use live data if available, otherwise show N/A
-  if (_battPct !== null) {
-    $('telem-batt').textContent = `${_battPct} %`;
-    $('telem-batt').className = 'telem-value ' + (_battPct > 50 ? 'good' : _battPct > 20 ? 'warn' : 'bad');
-    const battBar = $('telem-batt-bar');
-    battBar.style.width = `${_battPct}%`;
-    battBar.style.background = _battPct > 50 ? 'var(--green)' : _battPct > 20 ? 'var(--amber)' : 'var(--red)';
-  } else {
-    $('telem-batt').textContent = 'N/A';
-    $('telem-batt').className = 'telem-value';
-    $('telem-batt-bar').style.width = '0%';
-  }
-  $('telem-volt').textContent = _battVolt !== null ? `${_battVolt.toFixed(1)} V` : '-- V';
 
   $('telem-pos-x').textContent = `${robotPos.x.toFixed(2)} m`;
   $('telem-pos-y').textContent = `${robotPos.y.toFixed(2)} m`;
@@ -3163,7 +3177,10 @@ function refreshTelemetry() {
 let mapImage = null;
 let mapInfo = null;
 let mapObjects = [];
+let mapAnnotations = {zones: [], landmarks: []};
 let mapImageLoaded = false;
+let annotationMode = null; // null | 'zone' | 'landmark'
+let _annLocalUntil = 0; // timestamp: skip server annotation overwrite until this time
 
 function loadMapImage() {
   const img = new Image();
@@ -3202,6 +3219,16 @@ async function fetchMapState() {
           prev.origin[0] !== d.map.origin[0] ||
           prev.origin[1] !== d.map.origin[1]) {
         loadMapImage();
+      }
+    }
+    if (d.annotations) {
+      if (Date.now() > _annLocalUntil) {
+        const incoming = (d.annotations.zones || []).map(z => z.id);
+        const current = (mapAnnotations.zones || []).map(z => z.id);
+        if (JSON.stringify(incoming.sort()) !== JSON.stringify([...current].sort())) {
+          console.log(`[ANN-POLL] zones overwritten: [${current}] → [${incoming}]`);
+        }
+        mapAnnotations = d.annotations;
       }
     }
     if (d.objects) mapObjects = d.objects;
@@ -3299,6 +3326,44 @@ function renderMapCanvas(canvasId) {
     }
   }
 
+  // Semantic zones (translucent circles with labels)
+  const isBig = canvasId === 'map-canvas-big';
+  const annZones = mapAnnotations.zones || [];
+  for (const z of annZones) {
+    const cp = worldToCanvas(z.center_x, z.center_y, cw, ch);
+    const vp2 = getMapViewport();
+    if (!vp2) continue;
+    const sc = Math.min(cw / (vp2.maxWx - vp2.minWx), ch / (vp2.maxWy - vp2.minWy));
+    const rPx = (z.radius || 0.8) * sc;
+    ctx.beginPath();
+    ctx.arc(cp.px, cp.py, rPx, 0, Math.PI * 2);
+    ctx.fillStyle = (z.color || '#3b82f6') + '22';
+    ctx.fill();
+    ctx.strokeStyle = (z.color || '#3b82f6') + '88';
+    ctx.lineWidth = isBig ? 2 : 1;
+    ctx.stroke();
+    ctx.fillStyle = (z.color || '#3b82f6') + 'cc';
+    ctx.font = `bold ${isBig ? 11 : 7}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(z.label_th || z.id, cp.px, cp.py + 3);
+  }
+
+  // Landmarks (diamond markers)
+  for (const lm of (mapAnnotations.landmarks || [])) {
+    const lp = worldToCanvas(lm.x, lm.y, cw, ch);
+    const s = isBig ? 5 : 3;
+    ctx.save();
+    ctx.translate(lp.px, lp.py);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(-s, -s, s * 2, s * 2);
+    ctx.restore();
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = `${isBig ? 9 : 6}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(lm.label || lm.id, lp.px, lp.py - s - 3);
+  }
+
   // Object markers
   const markerR = canvasId === 'map-canvas-big' ? 8 : 5;
   const fontSize = canvasId === 'map-canvas-big' ? 11 : 7;
@@ -3382,7 +3447,6 @@ function canvasToWorld(cx, cy, cw, ch) {
   const c = $('map-canvas-big');
   if (!c) return;
   c.addEventListener('click', async function(e) {
-    if (!setPoseMode) return;
     const rect = c.getBoundingClientRect();
     const scaleX = c.width / rect.width;
     const scaleY = c.height / rect.height;
@@ -3390,11 +3454,52 @@ function canvasToWorld(cx, cy, cw, ch) {
     const cy = (e.clientY - rect.top) * scaleY;
     const w = canvasToWorld(cx, cy, c.width, c.height);
     if (!w) return;
-    await sendRelocalize(w.wx, w.wy, robotPos.th);
-    setPoseMode = false;
-    $('btn-set-pose').classList.remove('active');
-    $('relocalize-hint').classList.remove('show');
-    $('map-canvas-big').style.cursor = 'default';
+
+    if (setPoseMode) {
+      await sendRelocalize(w.wx, w.wy, robotPos.th);
+      setPoseMode = false;
+      $('btn-set-pose').classList.remove('active');
+      $('relocalize-hint').classList.remove('show');
+      c.style.cursor = 'default';
+      return;
+    }
+
+    if (annotationMode) {
+      openAnnotationModal(annotationMode, w.wx, w.wy);
+      annotationMode = null;
+      $('btn-add-zone').classList.remove('active');
+      $('btn-add-landmark').classList.remove('active');
+      c.style.cursor = 'default';
+      return;
+    }
+  });
+
+  // Double-click to edit existing zone/landmark
+  c.addEventListener('dblclick', function(e) {
+    const rect = c.getBoundingClientRect();
+    const scaleX = c.width / rect.width;
+    const scaleY = c.height / rect.height;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top) * scaleY;
+    const w = canvasToWorld(cx, cy, c.width, c.height);
+    if (!w) return;
+
+    // Check zones (click within radius)
+    for (const z of (mapAnnotations.zones || [])) {
+      const dx = w.wx - z.center_x, dy = w.wy - z.center_y;
+      if (Math.sqrt(dx * dx + dy * dy) <= (z.radius || 0.8)) {
+        openAnnotationModal('zone', z.center_x, z.center_y, z);
+        return;
+      }
+    }
+    // Check landmarks (within 0.3m)
+    for (const lm of (mapAnnotations.landmarks || [])) {
+      const dx = w.wx - lm.x, dy = w.wy - lm.y;
+      if (Math.sqrt(dx * dx + dy * dy) <= 0.3) {
+        openAnnotationModal('landmark', lm.x, lm.y, lm);
+        return;
+      }
+    }
   });
 })();
 
@@ -3419,6 +3524,203 @@ async function sendRelocalize(x, y, theta) {
 
 async function resetPoseOrigin() {
   await sendRelocalize(0, 0, 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ANNOTATION FUNCTIONS
+// ═══════════════════════════════════════════════════════════
+function toggleAnnotationMode(mode) {
+  // Cancel other modes
+  setPoseMode = false;
+  $('btn-set-pose').classList.remove('active');
+  $('relocalize-hint').classList.remove('show');
+
+  if (annotationMode === mode) {
+    annotationMode = null;
+    $('btn-add-zone').classList.remove('active');
+    $('btn-add-landmark').classList.remove('active');
+    $('map-canvas-big').style.cursor = 'default';
+  } else {
+    annotationMode = mode;
+    $('btn-add-zone').classList.toggle('active', mode === 'zone');
+    $('btn-add-landmark').classList.toggle('active', mode === 'landmark');
+    $('map-canvas-big').style.cursor = 'crosshair';
+  }
+}
+
+function openAnnotationModal(type, wx, wy, existing) {
+  const form = $('ann-form');
+  form.dataset.type = type;
+  form.dataset.x = wx.toFixed(3);
+  form.dataset.y = wy.toFixed(3);
+  form.dataset.editId = existing ? (existing.id || '') : '';
+
+  $('ann-title').textContent = existing
+    ? `Edit ${type === 'zone' ? 'Zone' : 'Landmark'}`
+    : `Add ${type === 'zone' ? 'Zone' : 'Landmark'}`;
+
+  // Source badge — show for existing entries
+  const badge = $('ann-source-badge');
+  if (existing && type === 'zone') {
+    const src = existing.source || 'seed';
+    badge.textContent = src === 'seed' ? '⬡ Default zone (can be edited or deleted)' : '✎ Manual zone';
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+
+  $('ann-zone-fields').style.display = type === 'zone' ? '' : 'none';
+  $('ann-lm-fields').style.display = type === 'landmark' ? '' : 'none';
+  $('ann-delete-btn').style.display = existing ? '' : 'none';
+
+  if (existing) {
+    $('ann-id').value = existing.id || '';
+    $('ann-id').readOnly = true;
+    if (type === 'zone') {
+      $('ann-label-th').value = existing.label_th || '';
+      $('ann-label-en').value = existing.label_en || '';
+      $('ann-radius').value = existing.radius || 0.8;
+      $('ann-color').value = existing.color || '#3b82f6';
+      $('ann-expected').value = (existing.expected_objects || []).join(', ');
+    } else {
+      $('ann-label-th').value = existing.label || '';
+      $('ann-label-en').value = '';
+      $('ann-category').value = existing.category || '';
+    }
+    $('ann-notes').value = existing.notes || '';
+  } else {
+    $('ann-id').value = '';
+    $('ann-id').readOnly = false;
+    $('ann-label-th').value = '';
+    $('ann-label-en').value = '';
+    $('ann-radius').value = 0.8;
+    $('ann-color').value = '#3b82f6';
+    $('ann-expected').value = '';
+    $('ann-category').value = '';
+    $('ann-notes').value = '';
+  }
+
+  // Populate zone-link dropdown for landmarks
+  if (type === 'landmark') {
+    const sel = $('ann-zone-link');
+    sel.innerHTML = '<option value="">No zone</option>';
+    for (const z of (mapAnnotations.zones || [])) {
+      const opt = document.createElement('option');
+      opt.value = z.id;
+      opt.textContent = z.label_th || z.id;
+      sel.appendChild(opt);
+    }
+    if (existing && existing.zone_id) sel.value = existing.zone_id;
+  }
+
+  $('annotation-modal').classList.add('show');
+}
+
+function closeAnnotationModal() {
+  $('annotation-modal').classList.remove('show');
+}
+
+async function saveAnnotation(e) {
+  e.preventDefault();
+  const form = $('ann-form');
+  const type = form.dataset.type;
+  const wx = parseFloat(form.dataset.x);
+  const wy = parseFloat(form.dataset.y);
+  const editId = form.dataset.editId;
+
+  let endpoint, payload;
+  if (type === 'zone') {
+    endpoint = '/map/annotations/zone';
+    payload = {
+      id: $('ann-id').value.trim(),
+      label_th: $('ann-label-th').value.trim(),
+      label_en: $('ann-label-en').value.trim(),
+      center_x: wx,
+      center_y: wy,
+      radius: parseFloat($('ann-radius').value) || 0.8,
+      color: $('ann-color').value,
+      expected_objects: $('ann-expected').value.split(',').map(s => s.trim()).filter(Boolean),
+      notes: $('ann-notes').value.trim(),
+      source: editId ? (mapAnnotations.zones.find(z => z.id === editId)?.source || 'manual') : 'manual',
+    };
+  } else {
+    endpoint = '/map/annotations/landmark';
+    payload = {
+      id: $('ann-id').value.trim(),
+      label: $('ann-label-th').value.trim() || $('ann-label-en').value.trim(),
+      x: wx,
+      y: wy,
+      zone_id: $('ann-zone-link').value,
+      category: $('ann-category').value.trim(),
+      notes: $('ann-notes').value.trim(),
+    };
+  }
+
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (resp.ok) {
+      // Update local state immediately — guard against poll overwrite for 5s
+      _annLocalUntil = Date.now() + 5000;
+      if (type === 'zone') {
+        const zones = mapAnnotations.zones.filter(z => z.id !== payload.id);
+        zones.push(payload);
+        mapAnnotations = {...mapAnnotations, zones};
+      } else {
+        const landmarks = mapAnnotations.landmarks.filter(l => l.id !== payload.id);
+        landmarks.push(payload);
+        mapAnnotations = {...mapAnnotations, landmarks};
+      }
+      logConsole('evt', `Saved ${type}: ${payload.id}`);
+    } else {
+      logConsole('err', `Save ${type} failed: HTTP ${resp.status}`);
+    }
+  } catch (err) {
+    logConsole('err', `Failed to save ${type}: ${err}`);
+  }
+  closeAnnotationModal();
+}
+
+async function deleteAnnotation() {
+  const form = $('ann-form');
+  const type = form.dataset.type;
+  const id = form.dataset.editId;
+  if (!id) return;
+
+  // Debug: log what we're about to delete
+  const existingZone = type === 'zone' ? mapAnnotations.zones.find(z => z.id === id) : null;
+  console.log(`[ANN-DELETE] type=${type} id="${id}" source="${existingZone?.source || 'n/a'}"`);
+  console.log(`[ANN-DELETE] zones BEFORE delete:`, (mapAnnotations.zones || []).map(z => z.id));
+
+  if (!confirm(`Delete ${type} "${id}"?`)) return;
+  const endpoint = type === 'zone'
+    ? `/map/annotations/zone/${id}`
+    : `/map/annotations/landmark/${id}`;
+  console.log(`[ANN-DELETE] sending DELETE ${endpoint}`);
+  try {
+    const resp = await fetch(endpoint, {method: 'DELETE'});
+    console.log(`[ANN-DELETE] response HTTP ${resp.status} ok=${resp.ok}`);
+    if (resp.ok) {
+      // Remove from local state immediately — guard against poll overwrite for 5s
+      _annLocalUntil = Date.now() + 5000;
+      if (type === 'zone') {
+        mapAnnotations = {...mapAnnotations, zones: mapAnnotations.zones.filter(z => z.id !== id)};
+      } else {
+        mapAnnotations = {...mapAnnotations, landmarks: mapAnnotations.landmarks.filter(l => l.id !== id)};
+      }
+      console.log(`[ANN-DELETE] zones AFTER delete:`, (mapAnnotations.zones || []).map(z => z.id));
+      logConsole('evt', `Deleted ${type}: ${id}`);
+    } else {
+      logConsole('err', `Delete ${type} failed: HTTP ${resp.status}`);
+    }
+  } catch (err) {
+    console.error(`[ANN-DELETE] fetch error:`, err);
+    logConsole('err', `Failed to delete ${type}: ${err}`);
+  }
+  closeAnnotationModal();
 }
 
 setInterval(() => { refreshTelemetry(); }, 3000);
