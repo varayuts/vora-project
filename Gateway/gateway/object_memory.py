@@ -301,6 +301,60 @@ class ObjectMemory:
             return []
         return self._memory[object_name][:limit]
 
+    def reload(self) -> int:
+        """Re-read memory from disk so deletions/edits made via the UI take
+        effect immediately. Returns the number of records currently held.
+        Single source of truth: whatever is on disk overrides any in-process
+        cache built up since the last save."""
+        before_objs = len(self._memory)
+        before_recs = sum(len(v) for v in self._memory.values())
+        self._memory = {}
+        self._load()
+        after_recs = sum(len(v) for v in self._memory.values())
+        logger.info(
+            f"[MEM] reloaded from disk: {len(self._memory)} objects "
+            f"({after_recs} records, was {before_objs}/{before_recs})"
+        )
+        return after_recs
+
+    def get_valid_history(
+        self,
+        object_name: str,
+        zone_id: Optional[str] = None,
+        max_age_hours: float = 48.0,
+        limit: int = 10,
+    ) -> List[ObjectLocation]:
+        """Return only fresh, in-zone, currently-on-disk records for planning.
+
+        - Drops entries older than ``max_age_hours`` (stale).
+        - If ``zone_id`` is given, drops entries whose ``section`` doesn't match.
+        - Drops entries pinned at the (0,0) origin (uninitialized pose writes).
+        Logs how many were dropped so [MEM] decisions are auditable.
+        """
+        history = self.get_history(object_name, limit=limit)
+        if not history:
+            return []
+        kept: List[ObjectLocation] = []
+        dropped_age = dropped_zone = dropped_origin = 0
+        for loc in history:
+            if loc.age_hours() > max_age_hours:
+                dropped_age += 1
+                continue
+            if zone_id and loc.section != zone_id:
+                dropped_zone += 1
+                continue
+            if abs(loc.observer_x) < 0.01 and abs(loc.observer_y) < 0.01:
+                dropped_origin += 1
+                continue
+            kept.append(loc)
+        if dropped_age or dropped_zone or dropped_origin:
+            logger.info(
+                f"[MEM] valid_history '{object_name}' "
+                f"zone={zone_id or '*'}: kept={len(kept)} "
+                f"dropped(stale={dropped_age},out_of_zone={dropped_zone},origin={dropped_origin})"
+            )
+        return kept
+
     def get_priority_zones(self, object_name: str) -> Dict[str, int]:
         """Get search priority zones for an object type.
 

@@ -29,9 +29,10 @@ import httpx
 logger = logging.getLogger("obstacle")
 
 # Configuration
-FRONT_ANGLE_DEG = 60       # ±30° from front = 60° cone
-OBSTACLE_WARN_M = 0.8      # Warning distance (slow down)
-OBSTACLE_STOP_M = 0.3      # Emergency stop distance
+FRONT_ANGLE_DEG = 40       # ±20° from front = 40° cone (narrowed from 60°)
+FORWARD_CONE_DEG = 20      # half-angle for forward-priority check
+OBSTACLE_WARN_M = 0.6      # Warning distance (slow down) — was 0.8
+OBSTACLE_STOP_M = 0.20     # Emergency stop distance — was 0.3
 SCAN_TOPIC = "/scan"        # ROS LaserScan topic
 AVOIDANCE_SPEED = 0.10      # Slow avoidance speed (m/s)
 AVOIDANCE_ANGULAR = 0.40    # Avoidance turn speed (rad/s)
@@ -240,13 +241,63 @@ class ObstacleAvoidance:
                 self._sector_distances[s] = float('inf')
             self._sector_min_distances[s] = sector_mins[s]
     
+    def _get_range_at(self, target_deg: float, tol_deg: float = 3.0) -> Optional[float]:
+        """Return the minimum valid range within ±tol_deg of target_deg (front=0).
+        None if no valid readings in that arc."""
+        if not self._last_scan_ranges:
+            return None
+        tgt = math.radians(target_deg)
+        tol = math.radians(tol_deg)
+        best = float('inf')
+        for i, r in enumerate(self._last_scan_ranges):
+            if not (self._last_range_min <= r <= self._last_range_max):
+                continue
+            angle = self._last_angle_min + i * self._last_angle_increment + LIDAR_ANGLE_OFFSET_RAD
+            if LIDAR_MIRROR:
+                angle = -angle
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+            if abs(angle - tgt) <= tol:
+                if r < best:
+                    best = r
+        return best if best != float('inf') else None
+
     def get_obstacle_checker(self):
         """Return a synchronous callable for exec_motion's obstacle_checker param.
-        Uses get_forward_clearance() to skip the LiDAR dead zone (±0-15°) which
-        can return junk near-zero values and cause false positives on forward motion."""
+
+        Forward-priority rule: if the center cone (±FORWARD_CONE_DEG) is clear
+        beyond 0.40 m, ALLOW motion even if side walls are close. Hard STOP is
+        reserved for things directly in front (±15°) within OBSTACLE_STOP_M.
+        This prevents corridor side-walls from causing false stops.
+        """
         def _check():
-            fwd = self.get_forward_clearance()
-            return fwd < OBSTACLE_STOP_M
+            forward = self._get_range_at(0, tol_deg=FORWARD_CONE_DEG)
+            left = self._get_range_at(-25, tol_deg=5)
+            right = self._get_range_at(25, tol_deg=5)
+            forward_clear = forward is not None and forward > 0.40
+
+            try:
+                _f = f"{forward:.2f}" if forward is not None else "—"
+                _l = f"{left:.2f}" if left is not None else "—"
+                _r = f"{right:.2f}" if right is not None else "—"
+                logger.info(f"[OBS] forward={_f} left={_l} right={_r}")
+            except Exception:
+                pass
+
+            if forward_clear:
+                logger.info("[OBS] decision: ALLOW (forward clear)")
+                return False  # do NOT stop, even if sides are close
+
+            # Hard stop only for true front collision (±15°)
+            hard_front = self._get_range_at(0, tol_deg=15)
+            if hard_front is not None and hard_front < OBSTACLE_STOP_M:
+                logger.info(f"[OBS] decision: BLOCK (front {hard_front:.2f} < {OBSTACLE_STOP_M})")
+                return True
+
+            logger.info("[OBS] decision: ALLOW (no front hazard)")
+            return False
         return _check
     
     def find_best_direction(self) -> Dict[str, Any]:

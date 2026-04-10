@@ -18,7 +18,7 @@ from gateway.camera_stream import get_camera, start_camera, stop_camera
 from gateway.object_memory import object_memory, get_section, location_to_bearing
 from gateway.spatial_memory import spatial_memory
 from gateway.semantic_map import semantic_map, Zone, Landmark
-from gateway.search_planner import SearchPlanner
+from gateway.search_planner import SearchPlanner, extract_zone_intent, find_memory_anchor
 from gateway.nav2_client import Nav2Client
 
 # Setup logging with colors
@@ -412,7 +412,19 @@ async def visual_search(
     
     # Normalize target name to official item if possible
     normalized_target = normalize_search_target(_display)
-    
+
+    # ── [MEM] Authoritative reload before search ──
+    # Force re-read of object_memory.json so anything deleted/edited via the
+    # UI takes effect *now*. Stops ghost objects from steering the planner.
+    try:
+        _mem_count = object_memory.reload()
+        logger.info(
+            f"[MEM] loaded objects: {len(object_memory.get_all_objects())} "
+            f"records: {_mem_count}"
+        )
+    except Exception as _e:
+        logger.warning(f"[MEM] reload failed: {_e}")
+
     # Check memory for previous location
     memory_hint = object_memory.get_search_hint(normalized_target)
     if memory_hint:
@@ -487,6 +499,7 @@ async def visual_search(
         announce += f" {colocation_llm_hint[:60]}"
     speak_tts_bg(announce)
 
+    arrived_zone = False  # GO-TO-ZONE state: True after successful navigate_to_zone (locks LOCAL mode)
     stale_count = 0  # track consecutive stale/empty VLM checks (camera/VLM truly dead)
     vlm_reject_count = 0  # track consecutive VLM quality-gate rejections (VLM working but bad output)
     wall_empty_count = 0  # consecutive "wall/empty/floor-only" scenes → stop moving
@@ -852,23 +865,150 @@ async def visual_search(
             return
 
         # ════════════════════════════════════════════════════════════
+        # Phase 0.4: Direct Zone-Name Navigation (GO-TO-ZONE)
+        # If the LLM target itself names a zone (e.g. "bedroom"),
+        # navigate to that zone's anchor BEFORE searching. After arrival,
+        # normal search continues. On failure, fall through to agent loop.
+        # ════════════════════════════════════════════════════════════
+        def _match_zone_by_name(name: str):
+            if not name:
+                return None
+            n = name.strip().lower()
+            for z in semantic_map.get_all_zones():
+                if n == z.id.lower() \
+                   or n == (z.label_en or "").strip().lower() \
+                   or n == (z.label_th or "").strip().lower():
+                    return z
+            return None
+
+        # Explicit zone intent — substring/alias/exit-pattern aware.
+        # Used by both Phase 0.4 (GO-TO-ZONE) and Phase 0.5 (planner override).
+        _explicit_zone_id, _excluded_zone_id = extract_zone_intent(
+            f"{_display} {normalized_target}", semantic_map
+        )
+        _current_zone = semantic_map.get_zone_at(
+            _robot_pose.get("x", 0.0), _robot_pose.get("y", 0.0)
+        )
+        _current_zone_id = _current_zone.id if _current_zone else None
+        if _explicit_zone_id or _excluded_zone_id:
+            logger.info(
+                f"🎯 Zone intent extracted: target={_explicit_zone_id} "
+                f"excluded={_excluded_zone_id} current={_current_zone_id}"
+            )
+
+        if not _search_cancel:
+            # Prefer explicit zone intent (handles compound queries like
+            # "water bottle, bedroom"). Fall back to legacy exact-match.
+            _zone_match = (
+                semantic_map.get_zone(_explicit_zone_id) if _explicit_zone_id else None
+            ) or _match_zone_by_name(normalized_target) or _match_zone_by_name(_display)
+            if _zone_match and USE_NAV2 and _nav2_client and not MOCK_ROBOT:
+                _zlabel = _zone_match.label_th or _zone_match.label_en or _zone_match.id
+                logger.info(
+                    f"[NAV] go_to_zone target='{_display}' zone='{_zone_match.id}' "
+                    f"@ ({_zone_match.center_x:.2f}, {_zone_match.center_y:.2f})"
+                )
+                speak_tts_bg(f"กำลังไป{_zlabel}ครับ")
+                await _broadcast_and_cache({
+                    "type": "search_status",
+                    "status": "navigating_to_zone",
+                    "target": _display,
+                    "zone": _zone_match.id,
+                    "zone_label": _zlabel,
+                    "goal_x": _zone_match.center_x,
+                    "goal_y": _zone_match.center_y,
+                })
+
+                # Bounded attempt loop: max 2 tries per zone, with one ±60°
+                # rotate-recovery between attempts. No infinite retry storms.
+                _zone_nav_ok = False
+                _MAX_ATTEMPTS = 2
+                for _attempt in range(_MAX_ATTEMPTS):
+                    if _search_cancel:
+                        break
+                    try:
+                        _zone_nav_ok = await _nav2_client.navigate_to_zone(
+                            x=_zone_match.center_x,
+                            y=_zone_match.center_y,
+                            timeout=45.0,
+                        )
+                    except Exception as _e:
+                        logger.warning(f"[NAV] go_to_zone error attempt {_attempt+1}: {_e}")
+                        _zone_nav_ok = False
+                    if _zone_nav_ok:
+                        break
+                    logger.warning(
+                        f"[NAV] failed zone {_zone_match.id} "
+                        f"(attempt {_attempt+1}/{_MAX_ATTEMPTS})"
+                    )
+                    if _attempt + 1 < _MAX_ATTEMPTS and not _search_cancel:
+                        # Stuck/blocked recovery: rotate ±60° in place, then retry.
+                        try:
+                            logger.info("[NAV] stuck recovery → rotate +60°")
+                            await _rotate_deg(60.0)
+                        except Exception as _re:
+                            logger.warning(f"[NAV] recovery rotate error: {_re}")
+
+                if _zone_nav_ok:
+                    arrived_zone = True
+                    _current_zone_id = _zone_match.id
+                    logger.info(
+                        f"[ZONE] current_zone updated -> {_current_zone_id}"
+                    )
+                    logger.info(
+                        f"✅ Arrived at zone {_zone_match.id} — LOCAL SEARCH MODE"
+                    )
+                else:
+                    logger.warning(
+                        f"[NAV] go_to_zone permanently failed for {_zone_match.id}"
+                    )
+
+        if _search_cancel:
+            await _search_cancelled(_display)
+            return
+
+        # ════════════════════════════════════════════════════════════
         # Phase 0.5: Semantic Zone Navigation
         # Before scanning randomly, check if we know WHERE to look.
         # Uses: zone expected_objects, object memory sightings, co-location.
         # If a strong zone match exists → navigate there → compact 3-dir scan.
         # Falls through to Agent Loop if no match or zone scan fails.
         # ════════════════════════════════════════════════════════════
-        if not _search_cancel:
+        # Phase 0.5 only runs when there is NO explicit zone intent.
+        # If the user named a room, Phase 0.4 is authoritative — we must not
+        # let the heuristic planner pick another zone first.
+        if not _search_cancel and not arrived_zone and not _explicit_zone_id:
             _planner = SearchPlanner(semantic_map, object_memory, spatial_memory)
             _plan = _planner.plan(
                 target=normalized_target,
                 robot_x=_robot_pose.get("x", 0.0),
                 robot_y=_robot_pose.get("y", 0.0),
+                explicit_zone_id=_explicit_zone_id,
+                excluded_zone_id=_excluded_zone_id,
+                current_zone_id=_current_zone_id,
             )
 
             if _plan.approach_zone_id:
                 _zone = semantic_map.get_zone(_plan.approach_zone_id)
                 _zone_label = _zone.label_th if _zone else _plan.approach_zone_id
+
+                # Memory-anchor refinement: if we have a recent sighting of
+                # the target inside this zone, hop to that exact spot instead
+                # of the zone center. Makes "I remember where I saw it" real.
+                _mem_anchor = find_memory_anchor(
+                    object_memory, semantic_map,
+                    normalized_target, _plan.approach_zone_id,
+                )
+                if _mem_anchor:
+                    _max, _may, _maage = _mem_anchor
+                    logger.info(
+                        f"🧠 memory_anchor in {_plan.approach_zone_id}: "
+                        f"({_max:.2f},{_may:.2f}) age={_maage:.1f}h "
+                        f"→ overriding zone center"
+                    )
+                    _plan.approach_x = _max
+                    _plan.approach_y = _may
+
                 logger.info(
                     f"🗺️ Semantic: go to {_zone_label} ({_plan.approach_zone_id}) "
                     f"at ({_plan.approach_x:.2f}, {_plan.approach_y:.2f}) "
@@ -901,7 +1041,9 @@ async def visual_search(
                         logger.warning(f"🧭 Nav2 zone nav error: {e}")
 
                 if not _nav_ok and not MOCK_ROBOT:
-                    # cmd_vel fallback: rotate toward zone anchor, drive forward
+                    # cmd_vel fallback: rotate toward zone anchor, drive forward.
+                    # Only drive forward if LiDAR confirms the path is clear —
+                    # otherwise we'd just slam into a wall and rotate-loop.
                     _dx = _plan.approach_x - _robot_pose.get("x", 0.0)
                     _dy = _plan.approach_y - _robot_pose.get("y", 0.0)
                     _target_angle = math.atan2(_dy, _dx)
@@ -911,11 +1053,21 @@ async def visual_search(
                         await _rotate_deg(_turn_deg)
                     _dist = math.sqrt(_dx * _dx + _dy * _dy)
                     if _dist > 0.15:
-                        _move_cmd = {
-                            "type": "move", "linear_x": 0.15, "angular_z": 0.0,
-                            "duration": min(_dist / 0.15, 8.0),
-                        }
-                        await motion.exec_motion(_move_cmd, obstacle_checker=_lidar_obstacle_check)
+                        try:
+                            _fwd_clear = _obstacle_avoidance.get_forward_clearance()
+                        except Exception:
+                            _fwd_clear = float("inf")
+                        if _fwd_clear < 0.35:
+                            logger.warning(
+                                f"[NAV] forward blocked ({_fwd_clear:.2f}m < 0.35m) "
+                                f"— skipping cmd_vel fallback drive"
+                            )
+                        else:
+                            _move_cmd = {
+                                "type": "move", "linear_x": 0.15, "angular_z": 0.0,
+                                "duration": min(_dist / 0.15, 8.0),
+                            }
+                            await motion.exec_motion(_move_cmd, obstacle_checker=_lidar_obstacle_check)
 
                 if _search_cancel:
                     await _search_cancelled(_display)
@@ -937,12 +1089,166 @@ async def visual_search(
 
                 _planner.mark_searched(_plan.approach_zone_id)
                 logger.info(
-                    f"🔍 Zone {_plan.approach_zone_id} scanned — not found, "
-                    f"falling through to agent loop"
+                    f"🔍 Zone {_plan.approach_zone_id} scanned — not found"
+                )
+
+                # ── Memory-backed fallback chain ──
+                # Before escalating to the reactive agent loop, try the next
+                # 1-2 zones that have memory or static-prior backing for this
+                # target. Skipped entirely when the user named an explicit
+                # zone (forced priority) — that case has only one valid room.
+                _try_fallbacks = (
+                    _explicit_zone_id is None
+                    and not MOCK_ROBOT
+                    and not _search_cancel
+                )
+                if _try_fallbacks:
+                    _excl = {_excluded_zone_id} if _excluded_zone_id else set()
+                    _fallbacks = _planner.memory_backed_fallback_zones(
+                        _plan, exclude_ids=_excl, max_n=2,
+                    )
+                    if _fallbacks:
+                        logger.info(
+                            f"🔁 memory_fallback candidates for "
+                            f"'{normalized_target}': "
+                            f"{[fz[0] for fz in _fallbacks]}"
+                        )
+                    for _fzid, _fx, _fy in _fallbacks:
+                        if _search_cancel:
+                            await _search_cancelled(_display)
+                            return
+                        # Refine fallback target with its own memory anchor
+                        _fanchor = find_memory_anchor(
+                            object_memory, semantic_map,
+                            normalized_target, _fzid,
+                        )
+                        if _fanchor:
+                            _fx, _fy, _fage = _fanchor
+                            logger.info(
+                                f"🧠 fallback memory_anchor in {_fzid}: "
+                                f"({_fx:.2f},{_fy:.2f}) age={_fage:.1f}h"
+                            )
+                        _fzone = semantic_map.get_zone(_fzid)
+                        _flabel = (_fzone.label_th if _fzone else _fzid)
+                        logger.info(
+                            f"🔁 escalate → memory-backed fallback zone "
+                            f"{_fzid} at ({_fx:.2f},{_fy:.2f})"
+                        )
+                        speak_tts_bg(f"ลองดู{_flabel}อีกที่ครับ")
+                        await manager.broadcast(json.dumps({
+                            "type": "search_status",
+                            "status": "navigating_to_zone",
+                            "target": _display,
+                            "zone": _fzid,
+                            "zone_label": _flabel,
+                            "goal_x": _fx,
+                            "goal_y": _fy,
+                        }))
+                        _fb_ok = False
+                        if USE_NAV2 and _nav2_client:
+                            try:
+                                _fb_ok = await _nav2_client.navigate_to_zone(
+                                    x=_fx, y=_fy, timeout=40.0,
+                                )
+                            except Exception as _e:
+                                logger.warning(f"🔁 fallback nav error: {_e}")
+                        if not _fb_ok:
+                            logger.info(
+                                f"🔁 fallback nav to {_fzid} failed — "
+                                f"trying next candidate"
+                            )
+                            continue
+                        # Local scan at fallback zone
+                        for _fsi, _fsa in enumerate(SearchPlanner.local_scan_angles()):
+                            if _search_cancel:
+                                await _search_cancelled(_display)
+                                return
+                            if _fsi > 0:
+                                await _rotate_deg(_fsa)
+                            if await _do_vlm_and_check(
+                                f"fallback_{_fzid}_{_fsi}", force=True
+                            ):
+                                return
+                        _planner.mark_searched(_fzid)
+                        logger.info(
+                            f"🔍 Fallback zone {_fzid} scanned — not found"
+                        )
+
+                logger.info(
+                    "🔍 memory-backed plan exhausted — "
+                    "falling through to agent loop"
                 )
 
         if _search_cancel:
             await _search_cancelled(_display)
+            return
+
+        # ── Explicit-zone safety stop ──
+        # The user named a specific room and we could not reach it. Do NOT
+        # silently degrade into the global wander loop — that would search
+        # other rooms the user explicitly didn't ask about.
+        if _explicit_zone_id and not arrived_zone:
+            logger.warning(
+                f"[NAV] explicit zone '{_explicit_zone_id}' unreachable — "
+                f"aborting search (no wander)"
+            )
+            speak_tts_bg("ไปไม่ถึงห้องที่ต้องการครับ ขออภัย")
+            await _search_not_found(_display, total_checks)
+            return
+
+        # ════════════════════════════════════════════════════════════
+        # LOCAL SEARCH MODE — only runs if GO-TO-ZONE arrived successfully.
+        # Robot stays at the zone anchor: rotate-in-place + VLM, no forward
+        # moves, no SearchPlanner, no global wandering. Always returns.
+        # ════════════════════════════════════════════════════════════
+        if arrived_zone:
+            logger.info("🔒 LOCAL SEARCH MODE (zone reached) — rotate-only, no global agent loop")
+            speak_tts_bg("ถึงแล้วครับ กำลังมองรอบๆ")
+
+            # Memory-anchor hop inside the arrived zone: if we remember
+            # exactly where this object lives here, walk to that spot before
+            # rotating. Skipped if anchor is < 0.4 m away (already there).
+            _arrived_zid = _zone_match.id if _zone_match else None
+            if _arrived_zid and not MOCK_ROBOT:
+                _local_anchor = find_memory_anchor(
+                    object_memory, semantic_map,
+                    normalized_target, _arrived_zid,
+                )
+                if _local_anchor:
+                    _lax, _lay, _laage = _local_anchor
+                    _ldx = _lax - _robot_pose.get("x", 0.0)
+                    _ldy = _lay - _robot_pose.get("y", 0.0)
+                    _ldist = math.sqrt(_ldx * _ldx + _ldy * _ldy)
+                    if _ldist > 0.4:
+                        logger.info(
+                            f"🧠 local memory_anchor in {_arrived_zid}: "
+                            f"({_lax:.2f},{_lay:.2f}) age={_laage:.1f}h "
+                            f"dist={_ldist:.2f}m → hopping"
+                        )
+                        if USE_NAV2 and _nav2_client:
+                            try:
+                                await _nav2_client.navigate_to_zone(
+                                    x=_lax, y=_lay, timeout=25.0,
+                                )
+                            except Exception as _e:
+                                logger.warning(f"🧠 local anchor nav error: {_e}")
+                    else:
+                        logger.info(
+                            f"🧠 local memory_anchor in {_arrived_zid}: "
+                            f"already within {_ldist:.2f}m — scan in place"
+                        )
+
+            _local_angles = SearchPlanner.local_scan_angles()  # e.g. [0, 120, -120]
+            for _li, _la in enumerate(_local_angles):
+                if _search_cancel:
+                    await _search_cancelled(_display)
+                    return
+                if _li > 0:
+                    await _rotate_deg(_la)
+                if await _do_vlm_and_check(f"local_zone_{_li}", force=True):
+                    return  # found
+            logger.info("🔒 LOCAL SEARCH MODE: target not found at zone — ending search")
+            await _search_not_found(_display, total_checks)
             return
 
         # ════════════════════════════════════════════════════════════
@@ -3264,17 +3570,59 @@ async def _push_objects_to_server():
             pass
         await asyncio.sleep(5.0)
 
-async def _push_annotations_to_server():
-    """Background task: push semantic map annotations to Server every ~10s."""
-    push_url = f"{SERVER_BASE}/map/annotations/push"
-    await asyncio.sleep(10)
+async def _sync_semantic_map_from_server():
+    """Background task: fetch semantic map from Server (source of truth) every ~30s.
+    Gateway uses this data READ-ONLY for search planning.
+    The Server owns all CRUD; Gateway just keeps a local cache."""
+    fetch_url = f"{SERVER_BASE}/map/annotations"
+    await asyncio.sleep(5)
     while True:
         try:
-            data = semantic_map.to_dict()
-            await _http.post(push_url, json=data, timeout=3.0)
-        except Exception:
-            pass
-        await asyncio.sleep(10.0)
+            resp = await _http.get(fetch_url, timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Update local SemanticMap from server data
+                new_zone_ids = set()
+                for zd in data.get("zones", []):
+                    z = Zone(
+                        id=zd["id"],
+                        label_th=zd.get("label_th", ""),
+                        label_en=zd.get("label_en", ""),
+                        center_x=float(zd.get("center_x", 0)),
+                        center_y=float(zd.get("center_y", 0)),
+                        radius=float(zd.get("radius", 1.0)),
+                        expected_objects=zd.get("expected_objects", []),
+                        notes=zd.get("notes", ""),
+                        color=zd.get("color", "#3b82f6"),
+                        source=zd.get("source", "seed"),
+                    )
+                    semantic_map._zones[z.id] = z
+                    new_zone_ids.add(z.id)
+                # Remove zones that no longer exist on Server
+                for zid in list(semantic_map._zones.keys()):
+                    if zid not in new_zone_ids:
+                        del semantic_map._zones[zid]
+                # Update landmarks
+                new_lm_ids = set()
+                for ld in data.get("landmarks", []):
+                    lm = Landmark(
+                        id=ld["id"],
+                        label=ld.get("label", ""),
+                        x=float(ld.get("x", 0)),
+                        y=float(ld.get("y", 0)),
+                        zone_id=ld.get("zone_id", ""),
+                        category=ld.get("category", ""),
+                        notes=ld.get("notes", ""),
+                    )
+                    semantic_map._landmarks[lm.id] = lm
+                    new_lm_ids.add(lm.id)
+                for lid in list(semantic_map._landmarks.keys()):
+                    if lid not in new_lm_ids:
+                        del semantic_map._landmarks[lid]
+                logger.debug(f"🗺️ Synced semantic map from Server: {list(new_zone_ids)}")
+        except Exception as e:
+            logger.debug(f"🗺️ Semantic map sync failed: {e}")
+        await asyncio.sleep(30.0)
 
 
 # ── Gateway endpoint for robot pose (webapp can also poll this) ───────
@@ -3349,8 +3697,9 @@ async def startup_event():
     motion.post_motion_hook = _update_dead_reckoning  # dead-reckoning fallback
     asyncio.create_task(_push_pose_to_server())
     asyncio.create_task(_push_objects_to_server())
-    asyncio.create_task(_push_annotations_to_server())
+    asyncio.create_task(_sync_semantic_map_from_server())
     logger.info("📍 Robot pose + object memory push tasks started")
+    logger.info("🗺️ Semantic map sync from Server task started (read-only)")
 
     if MOCK_ROBOT:
         logger.info("🧪 MOCK_ROBOT=1 — skipping ROSBridge connection")
@@ -3691,76 +4040,16 @@ async def camera_stop():
     return {"status": "stopped"}
 
 # ═══════════════════════════════════════════════════════════════════
-#  Semantic Map Annotations API
+#  Semantic Map — READ-ONLY (Server owns CRUD)
 # ═══════════════════════════════════════════════════════════════════
+# Gateway no longer owns semantic map CRUD. The Server at :8080 is
+# the sole owner. Gateway syncs via _sync_semantic_map_from_server()
+# and exposes read-only access for internal use (SearchPlanner, etc.)
 
 @app.get("/annotations")
 async def get_annotations():
-    """Get all semantic zones and landmarks."""
+    """Read-only: return Gateway's cached copy of semantic map."""
     return semantic_map.to_dict()
-
-
-@app.post("/annotations/zone")
-async def upsert_zone(request: Request):
-    """Create or update a semantic zone."""
-    data = await request.json()
-    zone = Zone(
-        id=data["id"],
-        label_th=data.get("label_th", ""),
-        label_en=data.get("label_en", ""),
-        center_x=float(data.get("center_x", 0)),
-        center_y=float(data.get("center_y", 0)),
-        radius=float(data.get("radius", 0.8)),
-        expected_objects=data.get("expected_objects", []),
-        notes=data.get("notes", ""),
-        color=data.get("color", "#3b82f6"),
-        source=data.get("source", "manual"),
-    )
-    semantic_map.add_zone(zone)
-    logger.info(f"📝 Zone upserted: {zone.id} ({zone.label_th}) at ({zone.center_x:.2f}, {zone.center_y:.2f})")
-    return {"ok": True, "zone_id": zone.id}
-
-
-@app.delete("/annotations/zone/{zone_id}")
-async def delete_zone_ep(zone_id: str):
-    """Delete a semantic zone. Returns 500 if file write fails."""
-    ok = semantic_map.delete_zone(zone_id)
-    remaining = [z.id for z in semantic_map.get_all_zones()]
-    logger.info(f"🗑️ Zone {'deleted' if ok else 'FAILED/not-found'}: {zone_id} | remaining zones: {remaining}")
-    if not ok and zone_id not in [z.id for z in semantic_map.get_all_zones()]:
-        # zone_id not found — not an error, just missing
-        return {"ok": False, "reason": "not_found"}
-    if not ok:
-        # delete_zone returned False due to save failure
-        from fastapi.responses import JSONResponse as GwJSONResponse
-        return GwJSONResponse({"ok": False, "reason": "save_failed"}, status_code=500)
-    return {"ok": True}
-
-
-@app.post("/annotations/landmark")
-async def upsert_landmark(request: Request):
-    """Create or update a landmark."""
-    data = await request.json()
-    lm = Landmark(
-        id=data["id"],
-        label=data.get("label", ""),
-        x=float(data.get("x", 0)),
-        y=float(data.get("y", 0)),
-        zone_id=data.get("zone_id", ""),
-        category=data.get("category", ""),
-        notes=data.get("notes", ""),
-    )
-    semantic_map.add_landmark(lm)
-    logger.info(f"📝 Landmark upserted: {lm.id} ({lm.label}) at ({lm.x:.2f}, {lm.y:.2f})")
-    return {"ok": True, "landmark_id": lm.id}
-
-
-@app.delete("/annotations/landmark/{lm_id}")
-async def delete_landmark_ep(lm_id: str):
-    """Delete a landmark."""
-    ok = semantic_map.delete_landmark(lm_id)
-    logger.info(f"🗑️ Landmark {'deleted' if ok else 'not found'}: {lm_id}")
-    return {"ok": ok}
 
 
 from pydantic import BaseModel
