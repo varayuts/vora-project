@@ -24,6 +24,8 @@ import json
 import math
 import time
 import logging
+import urllib.request
+import urllib.error
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -32,8 +34,71 @@ from gateway.semantic_map import semantic_map
 
 logger = logging.getLogger("object_memory")
 
-# Memory file location
+# Legacy file — NO LONGER source of truth. Kept only so older on-disk
+# data is visible for debugging; planning MUST ignore it. Server is the
+# single authority for runtime object memory.
 MEMORY_FILE = Path(__file__).parent.parent / "data" / "object_memory.json"
+
+# Server endpoint for authoritative memory fetch. Set by Gateway main.py
+# at startup via set_server_base(); until then reload() is a no-op.
+_server_base: Optional[str] = None
+
+
+def set_server_base(url: str) -> None:
+    """Inject the Server base URL so ObjectMemory.reload()/clear() can
+    talk to the authoritative store. Called once from Gateway startup."""
+    global _server_base
+    _server_base = (url or "").rstrip("/")
+    logger.info(f"[MEM] server base set → {_server_base}")
+
+
+def _server_get_full(timeout: float = 2.5) -> Optional[Dict[str, List[dict]]]:
+    """Blocking HTTP GET of the authoritative memory dict from Server.
+    Returns None on any failure — callers must handle that by falling
+    back to the current in-process cache (not to local disk)."""
+    if not _server_base:
+        return None
+    url = f"{_server_base}/map/objects/full"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+        data = json.loads(body.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.warning(f"[MEM] server GET {url} failed: {e}")
+        return None
+
+
+def _server_post_full(payload: Dict[str, List[dict]], timeout: float = 2.5) -> bool:
+    if not _server_base:
+        return False
+    url = f"{_server_base}/map/objects/full"
+    try:
+        req = urllib.request.Request(
+            url, method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=timeout).read()
+        return True
+    except Exception as e:
+        logger.warning(f"[MEM] server POST {url} failed: {e}")
+        return False
+
+
+def _server_delete(object_name: Optional[str] = None, timeout: float = 2.5) -> bool:
+    if not _server_base:
+        return False
+    path = f"/map/objects/{object_name}" if object_name else "/map/objects"
+    url = f"{_server_base}{path}"
+    try:
+        req = urllib.request.Request(url, method="DELETE")
+        urllib.request.urlopen(req, timeout=timeout).read()
+        return True
+    except Exception as e:
+        logger.warning(f"[MEM] server DELETE {url} failed: {e}")
+        return False
 
 # Default projection distance for object position estimation (meters)
 # With a webcam at ~0.5m height, objects on tables/floor are typically 0.5-1.5m away.

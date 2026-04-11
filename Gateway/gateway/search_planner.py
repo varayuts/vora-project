@@ -246,10 +246,16 @@ class SearchPlanner:
 
         scored: List[Tuple[str, float, str]] = []
 
-        # Get recently searched zones from spatial memory
-        recently_searched_zones = self._smem.get_recently_searched_zones(
-            max_age_min=_SUPPRESSION_SEC / 60.0
-        )
+        # Get recently searched zones from spatial memory.
+        # spatial_memory may be None now (Gateway disabled it as a planner
+        # input because stale cross-session observations were bleeding into
+        # ranking even after the user cleared object memory).
+        if self._smem is not None:
+            recently_searched_zones = self._smem.get_recently_searched_zones(
+                max_age_min=_SUPPRESSION_SEC / 60.0
+            )
+        else:
+            recently_searched_zones = set()
 
         for zone in zones:
             score = 0.0
@@ -275,7 +281,10 @@ class SearchPlanner:
                     break  # only count best sighting per zone
 
             # 3. Co-location: spatial_memory saw related landmark in this zone
-            related = self._smem.find_related_locations(target, max_age_min=30)
+            related = (
+                self._smem.find_related_locations(target, max_age_min=30)
+                if self._smem is not None else []
+            )
             for rel in related:
                 rel_zone = self._smap.get_zone_at(rel["x"], rel["y"])
                 if rel_zone and rel_zone.id == zone.id:

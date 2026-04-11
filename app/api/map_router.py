@@ -62,6 +62,13 @@ _robot_pose = {
 
 _object_markers: list = []   # [{name, x, y, zone, last_seen, confidence}, ...]
 
+# Authoritative full object memory (Server is sole source of truth).
+# Shape: {object_name: [record_dict, ...]} — matches Gateway's ObjectMemory on-wire format.
+# Gateway pushes full state via POST /map/objects/full and fetches it back
+# via GET /map/objects/full before each search. Local Gateway files are
+# no longer consulted for planning; deletions here propagate immediately.
+_object_memory_full: dict = {}
+
 # Trail history: accumulated from pose pushes (survives page refresh)
 _trail_history: list = []    # [{x, y, t}, ...]
 _TRAIL_MAX = 2000
@@ -263,6 +270,58 @@ async def push_object_markers(request: Request):
         return {"ok": True, "count": len(_object_markers)}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# ── Authoritative object memory endpoints (Server is source of truth) ─
+
+@router.get("/objects/full")
+async def get_object_memory_full():
+    """Return the full object memory dict. Gateway fetches this before
+    every search so planning is driven only by Server state — never by
+    stale local files."""
+    return JSONResponse(_object_memory_full)
+
+
+@router.post("/objects/full")
+async def push_object_memory_full(request: Request):
+    """Gateway pushes full object memory state. Full replacement semantics.
+
+    Any records not present in the incoming payload are dropped, so this
+    is the single mechanism that propagates Gateway-side remembers/clears
+    forward without drifting from the Server copy.
+    """
+    global _object_memory_full
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return JSONResponse({"ok": False, "error": "expect dict"}, status_code=400)
+        _object_memory_full = data
+        total = sum(len(v) for v in data.values() if isinstance(v, list))
+        logger.info(f"[MEM] full-memory push: {len(data)} objects / {total} records")
+        return {"ok": True, "objects": len(data), "records": total}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.delete("/objects")
+async def delete_all_objects():
+    """Delete ALL object memory (authoritative). Propagates to Gateway on
+    its next reload()."""
+    global _object_memory_full, _object_markers
+    _object_memory_full = {}
+    _object_markers = []
+    logger.info("[MEM] DELETE all — object memory cleared on Server")
+    return {"ok": True}
+
+
+@router.delete("/objects/{object_name}")
+async def delete_one_object(object_name: str):
+    """Delete memory for a single object name (authoritative)."""
+    global _object_memory_full, _object_markers
+    removed = _object_memory_full.pop(object_name, None)
+    _object_markers = [m for m in _object_markers if m.get("name") != object_name]
+    logger.info(f"[MEM] DELETE '{object_name}' — removed={bool(removed)}")
+    return {"ok": True, "removed": bool(removed)}
 
 
 # ── Navigation helpers ────────────────────────────────────────────────

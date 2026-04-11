@@ -19,7 +19,9 @@ from gateway.object_memory import object_memory, get_section, location_to_bearin
 from gateway.spatial_memory import spatial_memory
 from gateway.semantic_map import semantic_map, Zone, Landmark
 from gateway.search_planner import SearchPlanner, extract_zone_intent, find_memory_anchor
-from gateway.nav2_client import Nav2Client
+# Legacy Gateway-side Nav2 roslibpy ActionClient path is disabled.
+# See gateway/robot_nav_bridge.py for the authoritative /vora/command route.
+from gateway.robot_nav_bridge import RobotNavBridge as Nav2Client
 
 # Setup logging with colors
 logging.basicConfig(
@@ -389,7 +391,7 @@ async def visual_search(
     - Finds objects that are behind/beside the robot immediately
     - Each 360° scan = 4 VLM checks (~80s), but covers every angle
     """
-    global _search_active, _search_cancel
+    global _search_active, _search_cancel, _current_zone
     _search_active = True
     _search_cancel = False
     _search_cancel_event.clear()
@@ -425,8 +427,29 @@ async def visual_search(
     except Exception as _e:
         logger.warning(f"[MEM] reload failed: {_e}")
 
-    # Check memory for previous location
+    # Check memory for previous location.
+    # [MEM] Zone-filter: if the user's query explicitly names a target room
+    # and the robot is currently in a DIFFERENT zone, memory is untrusted
+    # for this search — stale cross-zone hints were biasing TTS and the
+    # decision layer into wrong-room wandering. Ignore the hint entirely.
     memory_hint = object_memory.get_search_hint(normalized_target)
+    try:
+        _early_tgt_zone, _ = extract_zone_intent(
+            f"{_display} {normalized_target}", semantic_map
+        )
+    except Exception:
+        _early_tgt_zone = None
+    if memory_hint and _early_tgt_zone:
+        _cz_obj = semantic_map.get_zone_at(
+            _robot_pose.get("x", 0.0), _robot_pose.get("y", 0.0)
+        )
+        _cz_id = _cz_obj.id if _cz_obj else _current_zone
+        if _cz_id != _early_tgt_zone:
+            logger.info(
+                f"[MEM] ignoring memory_hint — target_zone='{_early_tgt_zone}' "
+                f"!= current_zone='{_cz_id}' (cross-zone memory is untrusted)"
+            )
+            memory_hint = None
     if memory_hint:
         logger.info(f"📚 Memory hint: {memory_hint}")
     
@@ -902,63 +925,102 @@ async def visual_search(
             _zone_match = (
                 semantic_map.get_zone(_explicit_zone_id) if _explicit_zone_id else None
             ) or _match_zone_by_name(normalized_target) or _match_zone_by_name(_display)
+
+            # If the target itself NAMES a zone (e.g. user said "bathroom"
+            # and LLM passed it through as the target), treat it as explicit
+            # so the safety stop below fires on nav failure and Phase 0.5
+            # / SearchPlanner is skipped. Without this, a failed go-to-room
+            # silently degrades into planner wandering.
+            if _zone_match and not _explicit_zone_id:
+                _explicit_zone_id = _zone_match.id
+                logger.info(
+                    f"[ZONE] target is a zone name → promoting to "
+                    f"explicit_zone_id='{_explicit_zone_id}'"
+                )
+
             if _zone_match and USE_NAV2 and _nav2_client and not MOCK_ROBOT:
                 _zlabel = _zone_match.label_th or _zone_match.label_en or _zone_match.id
                 logger.info(
                     f"[NAV] go_to_zone target='{_display}' zone='{_zone_match.id}' "
                     f"@ ({_zone_match.center_x:.2f}, {_zone_match.center_y:.2f})"
                 )
-                speak_tts_bg(f"กำลังไป{_zlabel}ครับ")
-                await _broadcast_and_cache({
-                    "type": "search_status",
-                    "status": "navigating_to_zone",
-                    "target": _display,
-                    "zone": _zone_match.id,
-                    "zone_label": _zlabel,
-                    "goal_x": _zone_match.center_x,
-                    "goal_y": _zone_match.center_y,
-                })
 
-                # Bounded attempt loop: max 2 tries per zone, with one ±60°
-                # rotate-recovery between attempts. No infinite retry storms.
+                # ── Preflight: refuse to announce a move we can't actually
+                # dispatch. The old code spoke "กำลังไปห้องนอนครับ" even when
+                # the Nav2 path was broken — that made the system lie to the
+                # user. Now TTS + status only fire AFTER we know the /vora/command
+                # channel is up.
+                _nav_available = False
+                try:
+                    _nav_available = await _nav2_client.connect()
+                except Exception as _pe:
+                    logger.warning(f"[NAV] preflight connect error: {_pe}")
+                    _nav_available = False
                 _zone_nav_ok = False
-                _MAX_ATTEMPTS = 2
-                for _attempt in range(_MAX_ATTEMPTS):
-                    if _search_cancel:
-                        break
-                    try:
-                        _zone_nav_ok = await _nav2_client.navigate_to_zone(
-                            x=_zone_match.center_x,
-                            y=_zone_match.center_y,
-                            timeout=45.0,
-                        )
-                    except Exception as _e:
-                        logger.warning(f"[NAV] go_to_zone error attempt {_attempt+1}: {_e}")
-                        _zone_nav_ok = False
-                    if _zone_nav_ok:
-                        break
-                    logger.warning(
-                        f"[NAV] failed zone {_zone_match.id} "
-                        f"(attempt {_attempt+1}/{_MAX_ATTEMPTS})"
+                if not _nav_available:
+                    logger.error(
+                        f"[NAV] navigation channel unavailable — NOT announcing "
+                        f"movement to zone '{_zone_match.id}'"
                     )
-                    if _attempt + 1 < _MAX_ATTEMPTS and not _search_cancel:
-                        # Stuck/blocked recovery: rotate ±60° in place, then retry.
+                    await _broadcast_and_cache({
+                        "type": "search_status",
+                        "status": "nav_unavailable",
+                        "target": _display,
+                        "zone": _zone_match.id,
+                        "zone_label": _zlabel,
+                        "reason": "robot_nav_bridge_offline",
+                    })
+                    # do NOT speak, do NOT pretend to move; the explicit-zone
+                    # safety stop below will abort truthfully.
+                else:
+                    speak_tts_bg(f"กำลังไป{_zlabel}ครับ")
+                    await _broadcast_and_cache({
+                        "type": "search_status",
+                        "status": "navigating_to_zone",
+                        "target": _display,
+                        "zone": _zone_match.id,
+                        "zone_label": _zlabel,
+                        "goal_x": _zone_match.center_x,
+                        "goal_y": _zone_match.center_y,
+                    })
+
+                    # Bounded attempt loop: max 2 tries per zone, with one ±60°
+                    # rotate-recovery between attempts. No infinite retry storms.
+                    _MAX_ATTEMPTS = 2
+                    for _attempt in range(_MAX_ATTEMPTS):
+                        if _search_cancel:
+                            break
                         try:
-                            logger.info("[NAV] stuck recovery → rotate +60°")
-                            await _rotate_deg(60.0)
-                        except Exception as _re:
-                            logger.warning(f"[NAV] recovery rotate error: {_re}")
+                            _zone_nav_ok = await _nav2_client.navigate_to_zone(
+                                x=_zone_match.center_x,
+                                y=_zone_match.center_y,
+                                timeout=45.0,
+                            )
+                        except Exception as _e:
+                            logger.warning(f"[NAV] go_to_zone error attempt {_attempt+1}: {_e}")
+                            _zone_nav_ok = False
+                        if _zone_nav_ok:
+                            break
+                        logger.warning(
+                            f"[NAV] failed zone {_zone_match.id} "
+                            f"(attempt {_attempt+1}/{_MAX_ATTEMPTS})"
+                        )
+                        if _attempt + 1 < _MAX_ATTEMPTS and not _search_cancel:
+                            try:
+                                logger.info("[NAV] stuck recovery → rotate +60°")
+                                await _rotate_deg(60.0)
+                            except Exception as _re:
+                                logger.warning(f"[NAV] recovery rotate error: {_re}")
 
                 if _zone_nav_ok:
                     arrived_zone = True
                     _current_zone_id = _zone_match.id
-                    logger.info(
-                        f"[ZONE] current_zone updated -> {_current_zone_id}"
-                    )
-                    logger.info(
-                        f"✅ Arrived at zone {_zone_match.id} — LOCAL SEARCH MODE"
-                    )
-                else:
+                    # Persist across searches — decision layer of future
+                    # requests reads this to zone-filter memory.
+                    _current_zone = _zone_match.id
+                    logger.info(f"[ZONE] current_zone updated -> {_current_zone_id}")
+                    logger.info(f"✅ Arrived at zone {_zone_match.id} — LOCAL SEARCH MODE")
+                elif _nav_available:
                     logger.warning(
                         f"[NAV] go_to_zone permanently failed for {_zone_match.id}"
                     )
@@ -978,7 +1040,11 @@ async def visual_search(
         # If the user named a room, Phase 0.4 is authoritative — we must not
         # let the heuristic planner pick another zone first.
         if not _search_cancel and not arrived_zone and not _explicit_zone_id:
-            _planner = SearchPlanner(semantic_map, object_memory, spatial_memory)
+            # [MEM] Source-of-truth = object_memory (disk-authoritative).
+            # spatial_memory is deliberately NOT passed — its stale cross-session
+            # observations were still influencing zone ranking even after the
+            # user deleted object memory via the UI. Planner now ignores it.
+            _planner = SearchPlanner(semantic_map, object_memory, None)
             _plan = _planner.plan(
                 target=normalized_target,
                 robot_x=_robot_pose.get("x", 0.0),
@@ -3360,6 +3426,12 @@ def _lidar_obstacle_check() -> bool:
 
 # ── Robot Pose Tracking (from /odom via ROSBridge) ────────────────────
 _robot_pose = {"x": 0.0, "y": 0.0, "theta": 0.0}
+
+# ── Current semantic zone (persists across searches) ──
+# Updated only after a CONFIRMED navigate_to_zone arrival. The decision
+# layer reads this to decide whether memory is trustworthy for the current
+# request (memory from other zones is ignored when target_zone differs).
+_current_zone: Optional[str] = None
 _odom_subscribed = False
 _odom_msg_count = 0
 _odom_source = "none"  # "amcl" | "odom_hybrid" | "dead_reckoning" | "none"
