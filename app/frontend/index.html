@@ -2078,9 +2078,13 @@ function showFoundCard(target, imageUrl, description, robotX, robotY) {
   const imgHtml = imageUrl ? `<img class="found-img" src="${imageUrl}" onerror="this.style.display='none'" alt="${target}"/>` : '';
   const descHtml = description ? `<div class="found-text">${description}</div>` : '';
   const hasCoords = (robotX !== undefined && robotY !== undefined && (robotX !== 0 || robotY !== 0));
-  const coordHtml = hasCoords ? `<div class="found-coords">👁️ Seen from: X=${robotX.toFixed(2)}m, Y=${robotY.toFixed(2)}m</div>` : '';
+  const coordHtml = hasCoords
+    ? `<div class="found-coords">👁️ Seen from: X=${robotX.toFixed(2)}m, Y=${robotY.toFixed(2)}m
+         <div class="found-caveat" style="font-size:11px;opacity:0.65;">(observer pose — ตำแหน่งวัตถุจริงอาจไม่ตรงทั้งหมด)</div>
+       </div>`
+    : '';
   el.innerHTML = `
-    <div class="found-header">✅ เจอแล้ว: ${target}</div>
+    <div class="found-header">✅ เห็นแล้ว: ${target}</div>
     ${imgHtml}${descHtml}${coordHtml}`;
   chatContainer.appendChild(el);
   scrollChat();
@@ -3422,10 +3426,23 @@ function toggleExpandedMap() {
   }
 }
 
+// 2-click Set Pose: 1st click = position, 2nd click = heading vector.
+// theta = atan2(y2 - y1, x2 - x1)
+let setPoseFirstPoint = null;
+
+function _setPoseHintText(stage) {
+  const h = $('relocalize-hint');
+  if (!h) return;
+  if (stage === 'pos')      h.textContent = '🖱️ Click 1/2: ตำแหน่งหุ่น (position)';
+  else if (stage === 'head') h.textContent = '🖱️ Click 2/2: ทิศที่หุ่นหันหน้า (heading)';
+}
+
 function toggleSetPoseMode() {
   setPoseMode = !setPoseMode;
+  setPoseFirstPoint = null;
   $('btn-set-pose').classList.toggle('active', setPoseMode);
   $('relocalize-hint').classList.toggle('show', setPoseMode);
+  _setPoseHintText('pos');
   $('map-canvas-big').style.cursor = setPoseMode ? 'crosshair' : 'default';
 }
 
@@ -3456,10 +3473,26 @@ function canvasToWorld(cx, cy, cw, ch) {
     if (!w) return;
 
     if (setPoseMode) {
-      await sendRelocalize(w.wx, w.wy, robotPos.th);
+      if (!setPoseFirstPoint) {
+        // 1st click — capture position, wait for heading click
+        setPoseFirstPoint = { wx: w.wx, wy: w.wy };
+        _setPoseHintText('head');
+        console.log('[set-pose] 1/2 position:', w.wx.toFixed(2), w.wy.toFixed(2));
+        return;
+      }
+      // 2nd click — compute heading from vector (1st → 2nd)
+      const dx = w.wx - setPoseFirstPoint.wx;
+      const dy = w.wy - setPoseFirstPoint.wy;
+      const theta = Math.atan2(dy, dx);
+      const px = setPoseFirstPoint.wx, py = setPoseFirstPoint.wy;
+      console.log('[set-pose] 2/2 heading rad=', theta.toFixed(3),
+                  ' deg=', (theta * 180 / Math.PI).toFixed(1));
+      setPoseFirstPoint = null;
+      await sendRelocalize(px, py, theta);
       setPoseMode = false;
       $('btn-set-pose').classList.remove('active');
       $('relocalize-hint').classList.remove('show');
+      _setPoseHintText('pos');
       c.style.cursor = 'default';
       return;
     }
@@ -3505,6 +3538,9 @@ function canvasToWorld(cx, cy, cw, ch) {
 
 async function sendRelocalize(x, y, theta) {
   try {
+    console.log('[relocalize] POST x=', x.toFixed(3), ' y=', y.toFixed(3),
+                ' theta_rad=', theta.toFixed(3),
+                ' theta_deg=', (theta * 180 / Math.PI).toFixed(1));
     const r = await fetch('/map/relocalize', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -3514,8 +3550,11 @@ async function sendRelocalize(x, y, theta) {
     if (d.ok) {
       robotPos.x = x;
       robotPos.y = y;
+      robotPos.th = theta;   // CRITICAL: keep local heading in sync, no stale carry-over
       trailPoints.length = 0;
-      logConsole('evt', `📍 Pose set: x=${x.toFixed(2)} y=${y.toFixed(2)}`);
+      logConsole('evt', `📍 Pose set: x=${x.toFixed(2)} y=${y.toFixed(2)} θ=${(theta*180/Math.PI).toFixed(1)}°`);
+    } else if (d && d.rejected) {
+      logConsole('warn', `⚠️ Relocalize rejected: ${d.reason || 'unknown'}`);
     }
   } catch(e) {
     logConsole('err', `❌ Relocalize failed: ${e}`);

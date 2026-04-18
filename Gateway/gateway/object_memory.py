@@ -257,38 +257,64 @@ class ObjectMemory:
         self._load()
 
     def _load(self):
-        """Load memory from file, migrating old format if needed."""
-        if MEMORY_FILE.exists():
-            try:
-                with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    for obj_name, records in data.items():
-                        locs = []
-                        for r in records:
-                            r = _migrate_record(r)
-                            locs.append(ObjectLocation(**r))
-                        self._memory[obj_name] = locs
-                logger.info(f"📚 Loaded object memory: {len(self._memory)} objects")
-            except Exception as e:
-                logger.warning(f"Failed to load object memory: {e}")
-                self._memory = {}
-        else:
-            logger.info("📚 Object memory: Starting fresh")
+        """No-op. Local ``object_memory.json`` is NOT a source of truth.
+
+        The Server is the single authority; planning data is fetched via
+        :meth:`reload` before each search. Reading the file here would
+        resurrect objects the UI already deleted on the Server, which
+        was the exact bug we're closing. Logged once so operators can
+        audit the decision.
+        """
+        logger.info("[MEM] local file ignored — Server is the source of truth")
 
     def _save(self):
-        """Save memory to file (atomic: write tmp then rename)"""
-        try:
-            MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                obj_name: [asdict(loc) for loc in locations]
-                for obj_name, locations in self._memory.items()
-            }
-            tmp = MEMORY_FILE.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            tmp.replace(MEMORY_FILE)
-        except Exception as e:
-            logger.warning(f"Failed to save object memory: {e}")
+        """No-op. Gateway never writes ``object_memory.json`` anymore —
+        the authoritative store lives on the Server. ``remember()`` is
+        responsible for pushing new records forward via
+        ``POST /map/objects/full`` (driven by the Gateway push task)."""
+        return
+
+    # ── Server-backed load/push helpers ─────────────────────────────
+    def _apply_server_dict(self, data: Dict[str, List[dict]]) -> int:
+        """Replace the in-process memory from a Server payload.
+
+        The payload shape matches ``get_all_as_dict()`` minus the
+        derived ``zone_label``. Records are migrated through
+        ``_migrate_record`` so older-on-wire records still deserialize.
+        Returns the total number of records loaded.
+        """
+        new_memory: Dict[str, List[ObjectLocation]] = {}
+        total = 0
+        for obj_name, records in (data or {}).items():
+            if not isinstance(records, list):
+                continue
+            locs: List[ObjectLocation] = []
+            for r in records:
+                if not isinstance(r, dict):
+                    continue
+                r = dict(r)  # don't mutate caller
+                r.pop("zone_label", None)  # derived field, not a ctor arg
+                try:
+                    r = _migrate_record(r)
+                    locs.append(ObjectLocation(**r))
+                except Exception as e:
+                    logger.debug(f"[MEM] skip bad record for {obj_name}: {e}")
+            if locs:
+                new_memory[obj_name] = locs
+                total += len(locs)
+        self._memory = new_memory
+        return total
+
+    def push_to_server(self) -> bool:
+        """Publish the current in-process memory as the authoritative
+        Server state. Called from the Gateway push task after every
+        ``remember()`` / ``clear()`` so Server and Gateway stay in
+        sync without relying on disk."""
+        payload = {
+            name: [asdict(loc) for loc in locs]
+            for name, locs in self._memory.items()
+        }
+        return _server_post_full(payload)
 
     def remember(
         self,
@@ -307,12 +333,23 @@ class ObjectMemory:
 
         Computes estimated_x/estimated_y by projecting from robot pose + bearing.
         """
-        # ── Suspicious-write detection ──
+        # ── Hard reject untrustworthy writes ──
+        # Origin pose = AMCL not yet converged or _robot_pose still default.
+        # Empty source = caller has no localization signal at all.
+        # In both cases the estimated_x/estimated_y projection is meaningless
+        # and would mark the object in the wrong room.
         if abs(observer_x) < 0.01 and abs(observer_y) < 0.01:
             logger.warning(
-                f"⚠️ SUSPICIOUS WRITE: '{object_name}' stored at origin (0,0) "
-                f"— pose likely uninitialized (source={localization_source})"
+                f"📕 REJECT remember('{object_name}'): observer at origin (0,0) "
+                f"— pose uninitialized (source={localization_source!r})"
             )
+            return
+        if not localization_source or localization_source.lower() in ("none", "unknown"):
+            logger.warning(
+                f"📕 REJECT remember('{object_name}'): no trustworthy "
+                f"localization_source (got {localization_source!r})"
+            )
+            return
 
         # ── Compute derived fields ──
         bearing = location_to_bearing(location)
@@ -320,6 +357,11 @@ class ObjectMemory:
             observer_x, observer_y, observer_theta, bearing,
         )
         zone_name = get_zone_name(est_x, est_y)
+        logger.info(
+            f"📥 remember('{object_name}') ACCEPTED: src={localization_source} "
+            f"observer=({observer_x:.2f},{observer_y:.2f},{observer_theta:.2f}) "
+            f"estimated=({est_x:.2f},{est_y:.2f}) zone={zone_name}"
+        )
 
         loc = ObjectLocation(
             object_name=object_name,
@@ -346,7 +388,11 @@ class ObjectMemory:
         self._memory[object_name].insert(0, loc)
         self._memory[object_name] = self._memory[object_name][:10]
 
-        self._save()
+        # Immediate push to Server (authoritative). If it fails the
+        # next reload() will still see the previous Server state, so
+        # the in-process record is effectively local-only until the
+        # background push task catches up.
+        self.push_to_server()
         logger.info(
             f"📝 Remembered: {display_name} at estimated ({est_x:.2f}, {est_y:.2f}) "
             f"zone={zone_name}({get_zone_label(zone_name)}) "
@@ -367,18 +413,25 @@ class ObjectMemory:
         return self._memory[object_name][:limit]
 
     def reload(self) -> int:
-        """Re-read memory from disk so deletions/edits made via the UI take
-        effect immediately. Returns the number of records currently held.
-        Single source of truth: whatever is on disk overrides any in-process
-        cache built up since the last save."""
+        """Fetch the authoritative memory state from the Server.
+
+        Returns the total number of records now held in-process. If the
+        Server is unreachable we keep the existing in-process cache
+        (never fall back to the local file — that was the bug).
+        """
         before_objs = len(self._memory)
         before_recs = sum(len(v) for v in self._memory.values())
-        self._memory = {}
-        self._load()
-        after_recs = sum(len(v) for v in self._memory.values())
+        data = _server_get_full()
+        if data is None:
+            logger.warning(
+                f"[MEM] reload skipped — server unavailable, "
+                f"keeping cache objs={before_objs} recs={before_recs}"
+            )
+            return before_recs
+        after_recs = self._apply_server_dict(data)
         logger.info(
-            f"[MEM] reloaded from disk: {len(self._memory)} objects "
-            f"({after_recs} records, was {before_objs}/{before_recs})"
+            f"[MEM] source=server objects={len(self._memory)} records={after_recs} "
+            f"(was {before_objs}/{before_recs})"
         )
         return after_recs
 
@@ -512,13 +565,18 @@ class ObjectMemory:
         return "\n".join(lines)
 
     def clear(self, object_name: Optional[str] = None):
-        """Clear memory for one object or all"""
+        """Clear memory for one object or all. Authoritative on Server —
+        we clear the in-process cache AND propagate the delete so the
+        next planning cycle can't resurrect it via ``reload()``."""
         if object_name:
             if object_name in self._memory:
                 del self._memory[object_name]
+            _server_delete(object_name)
+            logger.info(f"[MEM] deleted '{object_name}' — server acked")
         else:
             self._memory = {}
-        self._save()
+            _server_delete(None)
+            logger.info("[MEM] deleted all — server acked")
 
 
 # Global singleton

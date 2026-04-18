@@ -116,24 +116,13 @@ class SpatialMemory:
     # ═══════════════════════════════════════════
 
     def _load(self):
-        if MEMORY_FILE.exists():
-            try:
-                with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                obs_list = data.get("observations", [])
-                self._next_id = data.get("next_id", 1)
-                self._observations = [Observation(**o) for o in obs_list]
-                # Prune expired on load
-                self._prune()
-                logger.info(
-                    f"🧠 Spatial memory loaded: {len(self._observations)} observations"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to load spatial memory: {e}")
-                self._observations = []
-                self._next_id = 1
-        else:
-            logger.info("🧠 Spatial memory: starting fresh")
+        """No-op. Local ``spatial_memory.json`` is NOT a source of truth
+        anymore — stale cross-session landmarks used to bias the planner
+        even after object memory was cleared. Start fresh on boot; the
+        in-process list still accumulates across searches."""
+        self._observations = []
+        self._next_id = 1
+        logger.info("[MEM] spatial local file ignored — starting fresh in-process")
 
     def _save(self):
         try:

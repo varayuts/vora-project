@@ -26,6 +26,7 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 from geometry_msgs.msg import TransformStamped, Twist
+from std_msgs.msg import Bool
 
 
 class OdomTFBroadcaster(Node):
@@ -58,20 +59,16 @@ class OdomTFBroadcaster(Node):
 
         self._static_br.sendTransform(static_tf_msgs)
 
-        # Publish initial odom → base_footprint immediately (identity)
-        # so tf2_echo can see the frame before first /odom arrives.
+        # odom→base_footprint TF is published continuously by _tf_timer (100 Hz).
+        # Before first /odom: identity transform.  After: dead-reckoning x,y + real θ.
         # Skipped in --skip-odom-tf mode (EKF already owns this TF).
         self._got_odom = False
+        self._latest_orientation_x = 0.0
+        self._latest_orientation_y = 0.0
+        self._latest_orientation_z = 0.0
+        self._latest_orientation_w = 1.0
         if not self._skip_odom_tf:
-            init_t = TransformStamped()
-            init_t.header.stamp = self.get_clock().now().to_msg()
-            init_t.header.frame_id = "odom"
-            init_t.child_frame_id = "base_footprint"
-            init_t.transform.rotation.w = 1.0
-            self._br.sendTransform(init_t)
-
-        # Also publish at 10Hz until first /odom arrives (only when owning the TF)
-        self._init_timer = self.create_timer(0.1, self._publish_init_tf)
+            self._tf_timer = self.create_timer(0.01, self._publish_tf_cb)  # 100 Hz — reduces gap for AMCL getOdomPose() TF lookup
 
         self.get_logger().info("odom → base_footprint → base_link TF broadcaster started")
 
@@ -97,17 +94,25 @@ class OdomTFBroadcaster(Node):
         self._cmd_vel_active = False
         self._stop_logged = False  # prevent repeated STOP logs
         self._watchdog_timer = self.create_timer(0.5, self._watchdog_cb)
+        # Suppress watchdog STOP while Nav2 goal is active (recovery gaps can exceed 5s).
+        self._nav_active = False
+        self.create_subscription(Bool, '/vora/nav_active', self._nav_active_cb, 10)
 
-    def _publish_init_tf(self):
-        """Keep publishing identity TF until real /odom data arrives."""
-        if self._got_odom or self._skip_odom_tf:
-            self._init_timer.cancel()
-            return
+    def _publish_tf_cb(self):
+        """Publish odom→base_footprint at 100 Hz.
+        Stamp uses current ROS time only to avoid future-dated TF entries that can
+        trigger Nav2 / costmap extrapolation and message-filter failures."""
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = "odom"
         t.child_frame_id = "base_footprint"
-        t.transform.rotation.w = 1.0
+        t.transform.translation.x = self._x
+        t.transform.translation.y = self._y
+        t.transform.translation.z = 0.0
+        t.transform.rotation.x = self._latest_orientation_x
+        t.transform.rotation.y = self._latest_orientation_y
+        t.transform.rotation.z = self._latest_orientation_z
+        t.transform.rotation.w = self._latest_orientation_w
         self._br.sendTransform(t)
 
     def _cmd_vel_cb(self, msg: Twist):
@@ -141,11 +146,16 @@ class OdomTFBroadcaster(Node):
             self._x += (c * vx - s * vy) * dt
             self._y += (s * vx + c * vy) * dt
 
+    def _nav_active_cb(self, msg: Bool):
+        self._nav_active = msg.data
+
     def _watchdog_cb(self):
         if not self._cmd_vel_active:
             return
+        if self._nav_active:
+            return  # Nav2 goal active — recovery/replanning gaps can exceed 5s; don't STOP
         elapsed = (self.get_clock().now() - self._last_cmd_vel_time).nanoseconds / 1e9
-        if elapsed > 1.0:
+        if elapsed > 5.0:  # was 1.0 — Nav2 planning/recovery gaps can exceed 1s on Jetson Nano
             self._cmd_vel_pub.publish(Twist())
             self._cmd_vel_active = False
             if not self._stop_logged:
@@ -161,22 +171,15 @@ class OdomTFBroadcaster(Node):
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self._yaw = math.atan2(siny_cosp, cosy_cosp)
 
-        # Broadcast odom → base_footprint using dead-reckoning x,y + real θ.
-        # Skipped in --skip-odom-tf mode — EKF owns this TF.
-        if not self._skip_odom_tf:
-            t = TransformStamped()
-            t.header.stamp = msg.header.stamp
-            t.header.frame_id = "odom"
-            t.child_frame_id = "base_footprint"
-            t.transform.translation.x = self._x
-            t.transform.translation.y = self._y
-            t.transform.translation.z = 0.0
-            t.transform.rotation = msg.pose.pose.orientation
-            self._br.sendTransform(t)
+        # Store latest orientation for _publish_tf_cb (100 Hz timer owns the TF broadcast).
+        self._latest_orientation_x = q.x
+        self._latest_orientation_y = q.y
+        self._latest_orientation_z = q.z
+        self._latest_orientation_w = q.w
 
         # Publish /odom_fused for Nav2 bt_navigator (progress checker needs x,y)
         fused = Odometry()
-        fused.header.stamp = msg.header.stamp
+        fused.header.stamp = self.get_clock().now().to_msg()
         fused.header.frame_id = "odom"
         fused.child_frame_id = "base_footprint"
         fused.pose.pose.position.x = self._x

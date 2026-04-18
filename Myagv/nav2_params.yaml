@@ -39,7 +39,7 @@ amcl:
     tf_broadcast: true
     transform_tolerance: 1.0     # 1s is plenty; 2.0 masked real TF lag bugs
     update_min_a: 0.2           # radians (~11°) — reduce CPU on Jetson Nano
-    update_min_d: 0.1           # meters — update every 10cm not 5cm
+    update_min_d: 0.15          # meters — 15cm reduces AMCL jitter near walls
     z_hit: 0.7              # was 0.5 — more weight on real laser hits
     z_max: 0.05
     z_rand: 0.3             # was 0.5 — less random noise → sharper localization
@@ -60,12 +60,15 @@ bt_navigator:
     default_server_timeout: 30  # was 20 — Jetson Nano needs more time to spin up action servers
     # This build uses dual navigator plugins (NavigateToPose + NavigateThroughPoses)
     # default_bt_xml_filename is IGNORED — must use these two params instead:
-    default_nav_to_pose_bt_xml: /opt/ros/galactic/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
-    default_nav_through_poses_bt_xml: /opt/ros/galactic/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
+    default_nav_to_pose_bt_xml: /home/er/Desktop/VORA_myAGV_only_ros2_package/new5/bt_nav_to_pose_no_backup.xml
+    default_nav_through_poses_bt_xml: /home/er/Desktop/VORA_myAGV_only_ros2_package/new5/bt_nav_through_poses_no_backup.xml
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
       - nav2_follow_path_action_bt_node
-      - nav2_back_up_action_bt_node
+      # nav2_back_up_action_bt_node intentionally omitted: BackUp action server removed from
+      # recoveries_server (wall-collision risk on MyAGV). Its BT node constructor calls
+      # waitForActionServer() indefinitely → deadlocks bt_navigator on_activate().
       - nav2_spin_action_bt_node
       - nav2_wait_action_bt_node
       - nav2_clear_costmap_service_bt_node
@@ -76,6 +79,7 @@ bt_navigator:
       - nav2_rate_controller_bt_node
       - nav2_distance_controller_bt_node
       - nav2_recovery_node_bt_node
+      - nav2_remove_passed_goals_action_bt_node
       - nav2_pipeline_sequence_bt_node
       - nav2_round_robin_node_bt_node
 
@@ -93,39 +97,39 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.15  # 15cm — robot body is 21cm, 30cm was too aggressive near walls
-      movement_time_allowance: 20.0   # 20s — Jetson Nano + costmap lag can stall controller briefly
+      movement_time_allowance: 30.0   # 30s — DWB replanning gaps on Jetson Nano can exceed 20s
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.15         # 15cm — fine for visual search
-      yaw_goal_tolerance: 0.25        # ~14° — good enough to look at target
+      xy_goal_tolerance: 0.25         # 25cm — tightened from 35cm; still avoids thrashing but closer arrival
+      yaw_goal_tolerance: 0.52        # ~30° — relaxed to avoid spin-oscillation at goal
       stateful: true
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: false
-      min_vel_x: -0.10               # can go backwards
+      min_vel_x: 0.0                 # no reverse — prevents sliding backward into walls
       max_vel_x: 0.15                # slow and safe (15 cm/s)
-      min_vel_y: -0.10               # Mecanum strafe
-      max_vel_y: 0.10
-      max_vel_theta: 0.5             # rad/s turning speed
+      min_vel_y: -0.05               # minimal strafe — reduces sideways sliding
+      max_vel_y: 0.05
+      max_vel_theta: 0.5             # rad/s — reduced from 0.8 for smoother rotation
       min_speed_xy: 0.0
       max_speed_xy: 0.15
-      min_speed_theta: 0.0
+      min_speed_theta: 0.1           # prevent near-zero creep that stalls progress checker
       acc_lim_x: 0.5
       acc_lim_y: 0.5
-      acc_lim_theta: 1.0
+      acc_lim_theta: 0.5            # rad/s^2 — reduced from 1.0 for smoother acceleration
       decel_lim_x: -0.5
       decel_lim_y: -0.5
       decel_lim_theta: -1.0
       vx_samples: 6                  # was 10 — 6×3×12=216 traj (was 1000), 78% less CPU
       vy_samples: 3                  # was 5 — Mecanum strafe, fewer samples OK in lab
-      vtheta_samples: 12             # was 20 — still smooth rotation sampling
-      sim_time: 1.0                  # was 1.5 — shorter rollout = faster per-traj eval
+      vtheta_samples: 12             # 12 samples — 6×3×12=216 traj; 20 (360 traj) exceeded DWB deadline on Jetson Nano
+      sim_time: 1.2                  # 1.2s look-ahead — reduced from 1.5 to lower DWB eval CPU; still adequate lookahead
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.5
-      xy_goal_tolerance: 0.15
+      xy_goal_tolerance: 0.25         # match goal_checker — prevents DWB rejecting valid goals
       trans_stopped_velocity: 0.05   # was 0.15 (= max_vel_x!) — RotateToGoal fired instantly
       short_circuit_trajectory_evaluation: true
       stateful: true
@@ -146,7 +150,7 @@ controller_server:
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.slowing_factor: 3.0  # was 5.0 — too aggressive, caused jerky final rotation
       RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
@@ -164,8 +168,8 @@ local_costmap:
       # TF tolerance at costmap node level — covers robot pose lookup
       # (separate from observation source tolerance below)
       transform_tolerance: 0.5       # accept TF up to 0.5s off from query time
-      # Robot footprint (polygon — rectangular body)
-      footprint: "[ [0.13, 0.105], [0.13, -0.105], [-0.13, -0.105], [-0.13, 0.105] ]"
+      # Robot footprint (polygon — tightened to actual 21×20cm body)
+      footprint: "[ [0.13, 0.10], [0.13, -0.10], [-0.13, -0.10], [-0.13, 0.10] ]"
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -187,10 +191,17 @@ local_costmap:
           # 0.5s tolerance lets the message filter accept the nearest available TF
           # instead of dropping scans whose timestamps predate the buffer start.
           transform_tolerance: 0.5
+          # QoS fix: ydlidar_ros2_driver publishes /scan with BEST_EFFORT reliability.
+          # Nav2 costmap defaults to RELIABLE → "incompatible QoS" warning → costmap
+          # receives NO data → lifecycle_manager_navigation never reaches "active".
+          # Force BEST_EFFORT here to match the publisher.
+          qos_overrides:
+            reliability: best_effort
+            durability: volatile
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.30        # 30cm — robot half-diagonal + margin
+        cost_scaling_factor: 5.0      # steeper falloff — cost drops faster from obstacles
+        inflation_radius: 0.15        # 15cm — was 30cm which blocked doorways/corridors
 
 global_costmap:
   global_costmap:
@@ -200,7 +211,7 @@ global_costmap:
       publish_frequency: 0.5
       global_frame: map
       robot_base_frame: base_footprint
-      robot_radius: 0.15             # circumscribed radius of 21×26cm body
+      robot_radius: 0.14             # circumscribed radius of 21×20cm body (tightened)
       resolution: 0.05
       track_unknown_space: true
       transform_tolerance: 0.5       # same race-condition fix as local_costmap
@@ -223,10 +234,14 @@ global_costmap:
           obstacle_max_range: 4.0
           obstacle_min_range: 0.1
           transform_tolerance: 0.5   # same fix as local_costmap
+          # QoS fix: match publisher (ydlidar BEST_EFFORT) — same reason as local_costmap above.
+          qos_overrides:
+            reliability: best_effort
+            durability: volatile
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.30
+        cost_scaling_factor: 5.0      # steeper falloff — match local costmap
+        inflation_radius: 0.15        # 15cm — was 30cm, planner can now plan through doorways
 
 map_server:
   ros__parameters:
@@ -240,7 +255,7 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.2                  # 20cm tolerance for goal
+      tolerance: 1.0                  # relaxed to 1.0m — bathroom goal cell is blocked even within 50cm; 1.0m search radius finds nearest reachable cell
       use_astar: true                 # A* is faster than Dijkstra
       allow_unknown: true             # allow planning through unknown space
 
@@ -250,11 +265,10 @@ recoveries_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    recovery_plugins: ["spin", "backup", "wait"]
+    recovery_plugins: ["spin", "wait"]
     spin:
       plugin: "nav2_recoveries/Spin"
-    backup:
-      plugin: "nav2_recoveries/BackUp"
+    # backup removed — BackUp drives blindly backward, causes wall collisions on MyAGV
     wait:
       plugin: "nav2_recoveries/Wait"
 

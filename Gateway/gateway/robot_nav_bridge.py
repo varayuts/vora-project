@@ -69,6 +69,19 @@ class RobotNavBridge:
         self._navigating: bool = False
         self._current_qid: Optional[str] = None
 
+        # [SAFETY] Nav2 failure guard — after N consecutive ABORTED/FAILED
+        # results the bridge refuses further navigate_to_pose() calls until
+        # something explicitly resets the counter. Stops the infinite
+        # abort→recovery→retry loop the robot was getting stuck in.
+        self._consecutive_aborts: int = 0
+        self._ABORT_LIMIT: int = 3
+
+    def reset_failure_guard(self) -> None:
+        """Clear the consecutive-abort counter. Call at the start of a
+        new search / after human recovery so a fresh intent isn't blocked
+        by stale failures from the previous session."""
+        self._consecutive_aborts = 0
+
     # ── surface compat ────────────────────────────────────────────────
     @property
     def connected(self) -> bool:
@@ -189,6 +202,16 @@ class RobotNavBridge:
             return {"success": False, "status": "NAV_UNAVAILABLE", "duration": 0.0,
                     "distance_remaining": -1}
 
+        # [SAFETY] Refuse further goals if we've aborted repeatedly —
+        # prevents infinite recovery loop. Caller must reset_failure_guard()
+        # after taking corrective action (new search, human intervention).
+        if self._consecutive_aborts >= self._ABORT_LIMIT:
+            logger.error(
+                f"[NAV] aborted twice → stopping (guard={self._consecutive_aborts})"
+            )
+            return {"success": False, "status": "ABORT_GUARD", "duration": 0.0,
+                    "distance_remaining": -1}
+
         qid = uuid.uuid4().hex[:8]
         qz = math.sin(theta / 2.0)
         qw = math.cos(theta / 2.0)
@@ -253,6 +276,15 @@ class RobotNavBridge:
         }
         status = status_map.get(outcome, outcome.upper() or "UNKNOWN")
         self._last_status = status
+        # [SAFETY] Track consecutive aborts so we can refuse to loop
+        # forever if Nav2 keeps failing. Success resets the counter.
+        if ok:
+            self._consecutive_aborts = 0
+        elif status in ("ABORTED", "ERROR", "REJECTED", "TIMEOUT"):
+            self._consecutive_aborts += 1
+            logger.warning(
+                f"[NAV] consecutive_aborts={self._consecutive_aborts}/{self._ABORT_LIMIT}"
+            )
         logger.info(f"[NAV] qid={qid} → {status} in {elapsed:.1f}s")
         return {"success": ok, "status": status, "duration": elapsed,
                 "distance_remaining": 0.0 if ok else -1}

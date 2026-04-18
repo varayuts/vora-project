@@ -10,6 +10,8 @@ Publishes: /vora/status, /vora/result, /cmd_vel (safety stop)
 
 import json
 import math
+import random
+import subprocess
 import time
 import threading
 from typing import Any, Dict, Optional
@@ -18,8 +20,10 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient as RclpyActionClient
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist, PoseStamped
+from sensor_msgs.msg import LaserScan
 from nav2_msgs.action import NavigateToPose
 
 
@@ -72,6 +76,17 @@ class CommandExecutor(Node):
         # (roslibpy expects /navigate_to_pose/status but ROS2 uses /_action/status).
         self._nav2_client = RclpyActionClient(self, NavigateToPose, 'navigate_to_pose')
         self._nav_thread: Optional[threading.Thread] = None
+
+        # Latest laser scan for escape nudge forward-clearance check
+        # QoS fix: ydlidar_ros2_driver publishes /scan with BEST_EFFORT reliability.
+        # Default depth=10 uses RELIABLE → incompatible QoS → no laser data received.
+        _scan_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self._latest_scan: Optional[LaserScan] = None
+        self._scan_sub = self.create_subscription(LaserScan, '/scan', self._scan_cb, _scan_qos)
 
         # watchdog: if an active command times out, publish a timeout result
         self.timer = self.create_timer(0.5, self.on_timer)
@@ -129,6 +144,86 @@ class CommandExecutor(Node):
         twist.angular.z = 0.0
         self.cmd_vel_pub.publish(twist)
 
+    def _scan_cb(self, msg: LaserScan):
+        self._latest_scan = msg
+
+    def _check_forward_clearance(self, min_dist: float = 0.25) -> bool:
+        """Check if forward direction has at least min_dist clearance using latest /scan.
+        Forward = rays around angle 0 (±15°). Returns True if clear, False if blocked."""
+        scan = self._latest_scan
+        if scan is None:
+            self.get_logger().warn("[NAV] No scan data — assuming forward blocked")
+            return False
+        # Find indices covering ±15° around 0 (forward)
+        half_cone = math.radians(15.0)
+        forward_ranges = []
+        for i, r in enumerate(scan.ranges):
+            angle = scan.angle_min + i * scan.angle_increment
+            # Normalize to [-pi, pi]
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+            if abs(angle) <= half_cone:
+                if scan.range_min < r < scan.range_max:
+                    forward_ranges.append(r)
+        if not forward_ranges:
+            return False
+        closest = min(forward_ranges)
+        self.get_logger().info(f"[NAV] Forward clearance: {closest:.2f}m (need {min_dist:.2f}m)")
+        return closest >= min_dist
+
+    def _escape_nudge(self) -> str:
+        """Execute escape nudge: rotate ±25° then forward 8cm. Returns direction used."""
+        direction = random.choice(["LEFT", "RIGHT"])
+        rotate_angle = math.radians(45.0)  # was 25° — 45° gives more positional diversity for retry
+        rotate_speed = 0.5  # rad/s
+        rotate_duration = rotate_angle / rotate_speed  # ~0.87s
+
+        self.get_logger().info(f"[NAV] escape nudge triggered")
+        self.get_logger().info(f"[NAV] nudge direction={direction}")
+
+        # A. Rotate
+        twist = Twist()
+        twist.angular.z = rotate_speed if direction == "LEFT" else -rotate_speed
+        start = time.time()
+        while time.time() - start < rotate_duration and rclpy.ok():
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.1)
+        self.stop_robot()
+        time.sleep(0.2)
+
+        # B. Check forward clearance — if blocked, rotate opposite
+        if not self._check_forward_clearance(0.25):
+            opposite = "RIGHT" if direction == "LEFT" else "LEFT"
+            self.get_logger().info(f"[NAV] forward blocked, rotating {opposite} instead")
+            twist.angular.z = -twist.angular.z  # reverse rotation
+            # Rotate double (undo original + rotate opposite)
+            start = time.time()
+            while time.time() - start < rotate_duration * 2.0 and rclpy.ok():
+                self.cmd_vel_pub.publish(twist)
+                time.sleep(0.1)
+            self.stop_robot()
+            time.sleep(0.2)
+            direction = opposite
+
+            # Re-check after opposite rotation
+            if not self._check_forward_clearance(0.25):
+                self.get_logger().warn("[NAV] still blocked after opposite rotation — skipping forward nudge")
+                return direction
+
+        # C. Forward nudge: 0.08 m/s × 1.0s = ~8cm
+        twist = Twist()
+        twist.linear.x = 0.08
+        start = time.time()
+        while time.time() - start < 1.0 and rclpy.ok():
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.1)
+        self.stop_robot()
+        time.sleep(0.3)
+
+        return direction
+
     def _navigate_thread(self, query_id: str, target: str,
                           x: float, y: float, z: float,
                           qx: float, qy: float, qz: float, qw: float):
@@ -141,22 +236,64 @@ class CommandExecutor(Node):
         DO NOT use spin_until_future_complete here: adding self to a second executor
         while MultiThreadedExecutor already owns it raises RuntimeError.
         """
-        # ── 1. Wait for Nav2 action server (30s for Jetson Nano DDS discovery) ──
-        if not self._nav2_client.wait_for_server(timeout_sec=30.0):
-            self.get_logger().error("[NAVIGATE] /navigate_to_pose not available after 30s — is Nav2 running?")
+        # ── 1. Wait for Nav2 lifecycle active ──
+        # wait_for_server() only checks DDS endpoint visibility — bt_navigator can
+        # register its action server while still in lifecycle "inactive" state (before
+        # costmaps and planners have loaded). Goals sent to an inactive action server
+        # never get an acceptance callback, causing the 30s acceptance timeout.
+        # lifecycle_manager_navigation only reaches "active" after ALL managed nodes
+        # (bt_navigator, controller_server, planner_server, recoveries_server,
+        # waypoint_follower) have been successfully activated. This is the true gate.
+        _NAV2_LIFECYCLE_TIMEOUT_S = 60.0
+        self.get_logger().info("[NAVIGATE] waiting for Nav2 active")
+        _nav2_active = False
+        _lc_start = time.time()
+        while (time.time() - _lc_start) < _NAV2_LIFECYCLE_TIMEOUT_S and rclpy.ok():
+            try:
+                proc = subprocess.run(
+                    ["ros2", "service", "call",
+                     "/lifecycle_manager_navigation/get_state",
+                     "lifecycle_msgs/srv/GetState"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if "active" in proc.stdout:
+                    _nav2_active = True
+                    break
+            except Exception:
+                pass
+            time.sleep(2.0)
+
+        if not _nav2_active:
+            self.get_logger().error(
+                f"[NAVIGATE] nav_not_ready: lifecycle_manager_navigation not active "
+                f"after {_NAV2_LIFECYCLE_TIMEOUT_S:.0f}s — is Nav2 running?")
             self.publish_result({
-                "query_id": query_id,
-                "state": "done",
-                "result": "error",
-                "intent": "navigate",
-                "target": target,
-                "message": "Nav2 action server not available",
+                "query_id": query_id, "state": "done", "result": "nav_not_ready",
+                "intent": "navigate", "target": target,
+                "message": (f"Nav2 not active after {_NAV2_LIFECYCLE_TIMEOUT_S:.0f}s "
+                            "— start Nav2 first (start_nav2.sh)"),
                 "ts": time.time(),
             })
             self.clear_active()
             return
 
-        # ── 2. Build goal ──
+        self.get_logger().info("[NAVIGATE] Nav2 active confirmed")
+
+        # ── 2. Confirm action server endpoint reachable (should be instant now) ──
+        if not self._nav2_client.wait_for_server(timeout_sec=10.0):
+            self.get_logger().error(
+                "[NAVIGATE] /navigate_to_pose action server unreachable "
+                "despite lifecycle_manager_navigation being active")
+            self.publish_result({
+                "query_id": query_id, "state": "done", "result": "error",
+                "intent": "navigate", "target": target,
+                "message": "Nav2 action server unreachable despite lifecycle active",
+                "ts": time.time(),
+            })
+            self.clear_active()
+            return
+
+        # ── 3. Build goal ──
         goal = NavigateToPose.Goal()
         goal.pose = PoseStamped()
         goal.pose.header.frame_id = "map"
@@ -173,7 +310,13 @@ class CommandExecutor(Node):
         goal.pose.pose.orientation.w = qw
 
         # ── 3. Send goal — wait for acceptance via Event ──
-        self.get_logger().info(f"[NAVIGATE] Sending goal x={x:.2f} y={y:.2f} qz={qz:.3f} qw={qw:.3f}")
+        # Acceptance timeout: 30s. On Jetson Nano under load (Nav2 computing costmaps,
+        # DDS discovery in progress), the action server may take >10s to accept a goal.
+        # 10s was the prior value — it caused consistent "error" reports on every navigate.
+        _ACCEPT_TIMEOUT_S = 30.0
+        self.get_logger().info(
+            f"[NAVIGATE] Nav2 ACTIVE confirmed, sending goal "
+            f"x={x:.2f} y={y:.2f} qz={qz:.3f} qw={qw:.3f}")
         accepted_event = threading.Event()
         goal_handle_box: list = [None]
 
@@ -184,19 +327,22 @@ class CommandExecutor(Node):
         send_future = self._nav2_client.send_goal_async(goal)
         send_future.add_done_callback(_on_goal_response)
 
-        if not accepted_event.wait(timeout=10.0):
-            self.get_logger().error("[NAVIGATE] Timed out waiting for goal acceptance")
+        if not accepted_event.wait(timeout=_ACCEPT_TIMEOUT_S):
+            self.get_logger().error(
+                f"[NAVIGATE] Acceptance timeout after {_ACCEPT_TIMEOUT_S:.0f}s — "
+                "Nav2 did not respond (costmap/planner still initialising?)")
             self.publish_result({
-                "query_id": query_id, "state": "done", "result": "error",
+                "query_id": query_id, "state": "done", "result": "acceptance_timeout",
                 "intent": "navigate", "target": target,
-                "message": "Nav2 goal acceptance timeout", "ts": time.time(),
+                "message": f"Nav2 goal acceptance timed out after {_ACCEPT_TIMEOUT_S:.0f}s",
+                "ts": time.time(),
             })
             self.clear_active()
             return
 
         goal_handle = goal_handle_box[0]
         if not goal_handle.accepted:
-            self.get_logger().warn("[NAVIGATE] Goal rejected by Nav2")
+            self.get_logger().warn("[NAVIGATE] Goal rejected by Nav2 (costmap/planner not ready?)")
             self.publish_result({
                 "query_id": query_id, "state": "done", "result": "rejected",
                 "intent": "navigate", "target": target,
@@ -206,7 +352,7 @@ class CommandExecutor(Node):
             self.clear_active()
             return
 
-        # ── 4. Wait for result via Event ──
+        # ── 4. Wait for result via Event — with periodic progress logs ──
         self.get_logger().info("[NAVIGATE] Goal accepted — waiting for result...")
         result_event = threading.Event()
         result_box: list = [None]
@@ -218,13 +364,29 @@ class CommandExecutor(Node):
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(_on_result)
 
-        if not result_event.wait(timeout=self.default_timeout_s):
-            self.get_logger().warn("[NAVIGATE] Navigation timed out — cancelling")
+        _PROGRESS_INTERVAL_S = 15.0
+        _total_waited = 0.0
+        _nav_timed_out = True
+        while _total_waited < self.default_timeout_s:
+            _chunk = min(_PROGRESS_INTERVAL_S, self.default_timeout_s - _total_waited)
+            if result_event.wait(timeout=_chunk):
+                _nav_timed_out = False
+                break
+            _total_waited += _chunk
+            if _total_waited < self.default_timeout_s:
+                self.get_logger().info(
+                    f"[NAVIGATE] Still navigating... ({_total_waited:.0f}s elapsed, "
+                    f"limit={self.default_timeout_s:.0f}s)")
+
+        if _nav_timed_out:
+            self.get_logger().warn(
+                f"[NAVIGATE] Navigation timed out after {self.default_timeout_s:.0f}s — cancelling")
             goal_handle.cancel_goal_async()
             self.publish_result({
                 "query_id": query_id, "state": "done", "result": "timeout",
                 "intent": "navigate", "target": target,
-                "message": "Nav2 navigation timed out", "ts": time.time(),
+                "message": f"Nav2 navigation timed out after {self.default_timeout_s:.0f}s",
+                "ts": time.time(),
             })
             self.clear_active()
             return
@@ -241,6 +403,84 @@ class CommandExecutor(Node):
             outcome, message = "cancelled", "Navigation cancelled"
         else:
             outcome, message = "error", f"Nav2 finished with unexpected status {status}"
+
+        # ── 6. Escape nudge + single retry on ABORTED ──
+        if status == 6:
+            self.get_logger().warn(f"[NAVIGATE] Nav2 aborted — attempting escape nudge")
+            self.stop_robot()
+            nudge_dir = self._escape_nudge()
+            self.get_logger().info(f"[NAV] retry after escape (nudge={nudge_dir})")
+
+            time.sleep(1.5)  # let AMCL re-localize after physical nudge before retry
+            # Resend same goal once
+            self.get_logger().info(f"[NAVIGATE] Retry: sending same goal x={x:.2f} y={y:.2f}")
+            accepted_event2 = threading.Event()
+            goal_handle_box2: list = [None]
+
+            def _on_goal_response2(future):
+                goal_handle_box2[0] = future.result()
+                accepted_event2.set()
+
+            send_future2 = self._nav2_client.send_goal_async(goal)
+            send_future2.add_done_callback(_on_goal_response2)
+
+            if not accepted_event2.wait(timeout=_ACCEPT_TIMEOUT_S):
+                self.get_logger().error(
+                    f"[NAVIGATE] Retry: acceptance timeout after {_ACCEPT_TIMEOUT_S:.0f}s")
+                self.publish_result({
+                    "query_id": query_id, "state": "done", "result": "aborted",
+                    "intent": "navigate", "target": target,
+                    "message": "Escape nudge done but retry goal acceptance timed out",
+                    "ts": time.time(),
+                })
+                self.clear_active()
+                return
+
+            goal_handle2 = goal_handle_box2[0]
+            if not goal_handle2.accepted:
+                self.get_logger().warn("[NAVIGATE] Retry: goal rejected")
+                self.publish_result({
+                    "query_id": query_id, "state": "done", "result": "aborted",
+                    "intent": "navigate", "target": target,
+                    "message": "Escape nudge done but retry goal rejected",
+                    "ts": time.time(),
+                })
+                self.clear_active()
+                return
+
+            result_event2 = threading.Event()
+            result_box2: list = [None]
+
+            def _on_result2(future):
+                result_box2[0] = future.result()
+                result_event2.set()
+
+            result_future2 = goal_handle2.get_result_async()
+            result_future2.add_done_callback(_on_result2)
+
+            if not result_event2.wait(timeout=self.default_timeout_s):
+                self.get_logger().warn("[NAVIGATE] Retry: timed out — cancelling")
+                goal_handle2.cancel_goal_async()
+                self.publish_result({
+                    "query_id": query_id, "state": "done", "result": "timeout",
+                    "intent": "navigate", "target": target,
+                    "message": "Retry navigation timed out after escape nudge",
+                    "ts": time.time(),
+                })
+                self.clear_active()
+                return
+
+            nav_result2 = result_box2[0]
+            status2 = nav_result2.status
+            if status2 == 4:
+                outcome, message = "success", f"Reached ({x:.2f}, {y:.2f}) after escape nudge"
+            elif status2 == 6:
+                outcome, message = "aborted", "Nav2 aborted on retry after escape nudge"
+            elif status2 == 5:
+                outcome, message = "cancelled", "Retry navigation cancelled"
+            else:
+                outcome, message = "error", f"Retry finished with unexpected status {status2}"
+            self.get_logger().info(f"[NAVIGATE] Retry {outcome}: {message}")
 
         self.get_logger().info(f"[NAVIGATE] {outcome}: {message}")
         self.publish_result({
@@ -390,6 +630,11 @@ class CommandExecutor(Node):
                 "message": f"Navigating to ({x:.2f}, {y:.2f})",
                 "ts": time.time()
             })
+            # Disable the generic watchdog for navigate — the navigate thread manages
+            # its own timeouts (30s acceptance + default_timeout_s result wait).
+            # If watchdog were left enabled with a short timeout_s from params, it would
+            # fire and publish a conflicting "timeout" result mid-navigation.
+            self.active_timeout_s = 0  # 0 → watchdog condition `> 0` is False → disabled
             # Run Nav2 action in a background thread so spin() keeps processing.
             snap = self.active_query_id  # capture before thread races
             self._nav_thread = threading.Thread(

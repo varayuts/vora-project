@@ -56,12 +56,18 @@ _ZONE_ALIASES: Dict[str, str] = {
     "livingroom": "living_room",
     "ห้องรับแขก": "living_room",
     "ห้องนั่งเล่น": "living_room",
+    "นั่งเล่น": "living_room",  # catches "ที่นั่งเล่น" via substring
+    "รับแขก": "living_room",
     "door": "entrance",
     "front door": "entrance",
     "หน้าประตู": "entrance",
+    "ที่ประตู": "entrance",
+    "ประตูทางเข้า": "entrance",
     "ทางเข้า": "entrance",
     "ห้องนอน": "bedroom",
+    "ที่นอน": "bedroom",
     "ห้องน้ำ": "bathroom",
+    "ที่ห้องน้ำ": "bathroom",
 }
 
 # Phrases that indicate "leave/exit this zone" (the matched zone becomes EXCLUDED)

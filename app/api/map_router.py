@@ -423,11 +423,22 @@ async def relocalize(request: Request):
     global _robot_pose, _trail_last_x, _trail_last_y
     try:
         data = await request.json()
-        x = float(data.get("x", 0))
-        y = float(data.get("y", 0))
-        theta = float(data.get("theta", 0))
+        if "theta" not in data:
+            return JSONResponse(
+                {"ok": False, "error": "theta is required (use 2-click Set Pose)"},
+                status_code=400,
+            )
+        x = float(data["x"])
+        y = float(data["y"])
+        theta = float(data["theta"])
     except (KeyError, TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "need x, y, theta"}, status_code=400)
+
+    import math as _m
+    logger.info(
+        f"📍 /map/relocalize received: x={x:.3f} y={y:.3f} "
+        f"theta={theta:.3f}rad ({_m.degrees(theta):.1f}°)"
+    )
 
     # Immediately update server-side pose for responsive UI
     _robot_pose = {
