@@ -56,16 +56,16 @@ ok "ROS2 sourced"
 # lifecycle_manager binary is shared by nav+localization — kill all instances here;
 # both navigation_launch and localization_launch will restart them cleanly.
 info "Clearing all existing Nav2 processes..."
-pkill -9 -f "controller_server"      2>/dev/null || true
-pkill -9 -f "planner_server"         2>/dev/null || true
-pkill -9 -f "recoveries_server"      2>/dev/null || true
-pkill -9 -f "bt_navigator"           2>/dev/null || true
-pkill -9 -f "waypoint_follower"      2>/dev/null || true
-pkill -9 -f "nav2_amcl"              2>/dev/null || true   # localization — was missing
-pkill -9 -f "nav2_map_server"        2>/dev/null || true   # localization — was missing
-pkill -9 -f "nav2_lifecycle_manager" 2>/dev/null || true   # both managers — was missing
-pkill -9 -f "odom_tf_broadcaster.py" 2>/dev/null || true
-sleep 3  # Jetson Nano needs time to release DDS endpoints after SIGKILL
+pkill -f "controller_server"      2>/dev/null || true
+pkill -f "planner_server"         2>/dev/null || true
+pkill -f "recoveries_server"      2>/dev/null || true
+pkill -f "bt_navigator"           2>/dev/null || true
+pkill -f "waypoint_follower"      2>/dev/null || true
+pkill -f "nav2_amcl"              2>/dev/null || true   # localization — was missing
+pkill -f "nav2_map_server"        2>/dev/null || true   # localization — was missing
+pkill -f "nav2_lifecycle_manager" 2>/dev/null || true   # both managers — was missing
+pkill -f "odom_tf_broadcaster.py" 2>/dev/null || true
+sleep 3  # extra second: Jetson Nano is slow to release DDS endpoints
 ok "All Nav2 processes cleared"
 
 NAV2_PARAMS="${SCRIPT_DIR}/nav2_params.yaml"
@@ -260,7 +260,7 @@ from tf2_ros import Buffer, TransformListener
 rclpy.init()
 node = Node("vora_wait_map_odom")
 buf = Buffer()
-listener = TransformListener(buf, node, spin_thread=True)
+listener = TransformListener(buf, node, spin_thread=False)
 
 deadline = time.time() + 20.0
 ok = False
@@ -298,7 +298,7 @@ from tf2_ros import Buffer, TransformListener
 rclpy.init()
 node = Node("vora_wait_map_base")
 buf = Buffer()
-listener = TransformListener(buf, node, spin_thread=True)
+listener = TransformListener(buf, node, spin_thread=False)
 
 deadline = time.time() + 20.0
 hits = 0
@@ -421,10 +421,9 @@ if [[ "$MODE" == "nav" ]]; then
     sleep 5
     ok "Map Server + AMCL started"
 
-    # AMCL lifecycle services are unreliable on Galactic/Jetson Nano — assume active
-    # after localization_launch.py startup sleep. lifecycle_manager_localization confirms.
-    sleep 5
-    echo "[AMCL] assumed active (lifecycle_manager confirmed)"
+    # FIX 3: Gate on AMCL lifecycle active before publishing initial pose.
+    # AMCL silently drops /initialpose that arrives before its message subscribers are ready.
+    wait_amcl_active || exit 1
 
     # Publish initial pose via a rclpy node.
     #
@@ -444,7 +443,7 @@ if [[ "$MODE" == "nav" ]]; then
     # Extra settle: sleep 1 s after wait_amcl_active so AMCL's internal TF buffer
     # subscription has time to fill before we query it.
     sleep 1
-    info "Publishing initial pose 3× (${INIT_X}, ${INIT_Y}, yaw=${INIT_YAW}) stamp=now−0.5s..."
+    info "Publishing initial pose 3× (${INIT_X}, ${INIT_Y}, yaw=${INIT_YAW}) stamp=now−0.3s..."
     python3 - <<PYEOF
 import rclpy
 from rclpy.node import Node
@@ -465,7 +464,7 @@ for i in range(3):
     msg = PoseWithCovarianceStamped()
     # Stamp 0.3 s in the past so the TF lookup lands inside the existing buffer,
     # not ahead of the newest entry (which causes "extrapolation into the future").
-    stamp_time = node.get_clock().now() - Duration(nanoseconds=500_000_000)
+    stamp_time = node.get_clock().now() - Duration(nanoseconds=300_000_000)
     msg.header.stamp = stamp_time.to_msg()
     msg.header.frame_id = 'map'
     msg.pose.pose.position.x = init_x
@@ -480,7 +479,7 @@ for i in range(3):
     msg.pose.covariance[35] = 0.1   # yaw variance
     pub.publish(msg)
     node.get_logger().info(
-        f'Initial pose {i+1}/3 — stamp={msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d} (now-0.5s)'
+        f'Initial pose {i+1}/3 — stamp={msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d} (now-0.3s)'
     )
     time.sleep(1.0)
 
@@ -495,27 +494,16 @@ PYEOF
     check_tf_map_stable || exit 1
 
     # 2) Nav2 (planner + controller + bt_navigator + recoveries)
-    # Use local navigation_launch.py (not the stock nav2_bringup one) so that
-    # configured_params is passed to lifecycle_manager_navigation, applying
-    # bond_timeout: 30.0 from nav2_params.yaml.  The stock launch file omits this,
-    # causing the manager to use the 4s default → false bond-break on Jetson Nano
-    # → duplicate bringup → "Failed to change state for node: controller_server".
     info "Starting Nav2 navigation stack..."
-    ros2 launch "${SCRIPT_DIR}/navigation_launch.py" \
+    ros2 launch nav2_bringup navigation_launch.py \
         params_file:="$NAV2_PARAMS" \
         use_sim_time:=false &
     PIDS+=($!)
-    sleep 15   # allow Nav2 nodes to register and activate on Jetson Nano
+    sleep 3   # initial pause while nodes register with DDS
 
-    for _node in /controller_server /planner_server /bt_navigator; do
-        if ros2 node list 2>/dev/null | grep -q "${_node}"; then
-            ok "[NAV2] ${_node} detected"
-        else
-            err "[NAV2] ${_node} NOT found after 15s"
-            exit 1
-        fi
-    done
-    ok "[NAV2] Nav2 nodes running"
+    # Wait for lifecycle_manager_navigation to reach "active" state.
+    # Exit nonzero if Nav2 does not become active — do not declare false success.
+    wait_nav2_active || exit 1
 
     # STEP 4: Verify /scan QoS after Nav2 is active — confirm BEST_EFFORT match.
     # If you still see "incompatible QoS: RELIABILITY" in nav2 logs, check this output.
@@ -536,21 +524,13 @@ elif [[ "$MODE" == "slam" ]]; then
 
     # 2) Nav2
     info "Starting Nav2 navigation stack..."
-    ros2 launch "${SCRIPT_DIR}/navigation_launch.py" \
+    ros2 launch nav2_bringup navigation_launch.py \
         params_file:="$NAV2_PARAMS" \
         use_sim_time:=false &
     PIDS+=($!)
-    sleep 15
+    sleep 3
 
-    for _node in /controller_server /planner_server /bt_navigator; do
-        if ros2 node list 2>/dev/null | grep -q "${_node}"; then
-            ok "[NAV2] ${_node} detected"
-        else
-            err "[NAV2] ${_node} NOT found after 15s"
-            exit 1
-        fi
-    done
-    ok "[NAV2] Nav2 nodes running"
+    wait_nav2_active || exit 1
 
 elif [[ "$MODE" == "explore" ]]; then
     # ── Explore mode: slam_toolbox + Nav2 + explore_lite ──
@@ -566,22 +546,14 @@ elif [[ "$MODE" == "explore" ]]; then
 
     # 2) Nav2
     info "Starting Nav2 navigation stack..."
-    ros2 launch "${SCRIPT_DIR}/navigation_launch.py" \
+    ros2 launch nav2_bringup navigation_launch.py \
         params_file:="$NAV2_PARAMS" \
         use_sim_time:=false &
     PIDS+=($!)
-    sleep 15
+    sleep 5
 
-    # Check node existence before starting explore_lite — explore sends Nav2 goals
-    for _node in /controller_server /planner_server /bt_navigator; do
-        if ros2 node list 2>/dev/null | grep -q "${_node}"; then
-            ok "[NAV2] ${_node} detected"
-        else
-            err "[NAV2] ${_node} NOT found after 15s"
-            exit 1
-        fi
-    done
-    ok "[NAV2] Nav2 nodes running"
+    # Wait for Nav2 before starting explore_lite — explore sends Nav2 goals
+    wait_nav2_active || exit 1
 
     # 3) explore_lite (frontier exploration)
     info "Starting explore_lite (frontier exploration)..."

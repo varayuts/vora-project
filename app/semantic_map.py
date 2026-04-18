@@ -1,11 +1,11 @@
 """
-semantic_map.py — Semantic zone + landmark data model for VORA Gateway.
+semantic_map.py — Server-owned Semantic Map for VORA.
 
-Manages Gateway/data/semantic_map.json with CRUD operations.
-Replaces the hardcoded ZONE_DEFS that were previously in object_memory.py.
+This is the SOLE source of truth for zones and landmarks.
+Manages app/data/semantic_map.json with CRUD operations.
 
-Zones represent room sections (bedroom, entrance, etc.) with expected objects.
-Landmarks represent fixed reference points (sofa, table, door, etc.).
+Gateway reads this data (via GET /map/annotations) for search planning.
+The webapp reads/writes this data directly through map_router.py endpoints.
 """
 
 import json
@@ -17,9 +17,9 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-logger = logging.getLogger("gateway")
+logger = logging.getLogger("semantic_map")
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR = Path(__file__).resolve().parent / "data"
 _SEMANTIC_MAP_FILE = _DATA_DIR / "semantic_map.json"
 
 
@@ -57,10 +57,9 @@ class SemanticMap:
         self._landmarks: Dict[str, Landmark] = {}
         self._load()
 
-    # ── CRUD: Zones ──────────────────────────────────────────────
+    # -- CRUD: Zones --
 
     def add_zone(self, zone: Zone) -> bool:
-        """Add or replace a zone (upsert by id). Returns True on success."""
         old = self._zones.get(zone.id)
         self._zones[zone.id] = zone
         if not self._save():
@@ -86,9 +85,8 @@ class SemanticMap:
             return False
         removed = self._zones.pop(zone_id)
         if not self._save():
-            # Rollback: restore zone if file write failed
             self._zones[zone_id] = removed
-            logger.error(f"❌ delete_zone rollback: restored '{zone_id}' after save failure")
+            logger.error(f"delete_zone rollback: restored '{zone_id}' after save failure")
             return False
         return True
 
@@ -98,12 +96,18 @@ class SemanticMap:
     def get_all_zones(self) -> List[Zone]:
         return list(self._zones.values())
 
-    # ── CRUD: Landmarks ──────────────────────────────────────────
+    # -- CRUD: Landmarks --
 
-    def add_landmark(self, lm: Landmark) -> None:
-        """Add or replace a landmark (upsert by id)."""
+    def add_landmark(self, lm: Landmark) -> bool:
+        old = self._landmarks.get(lm.id)
         self._landmarks[lm.id] = lm
-        self._save()
+        if not self._save():
+            if old:
+                self._landmarks[lm.id] = old
+            else:
+                self._landmarks.pop(lm.id, None)
+            return False
+        return True
 
     def update_landmark(self, lm_id: str, updates: dict) -> Optional[Landmark]:
         lm = self._landmarks.get(lm_id)
@@ -116,19 +120,21 @@ class SemanticMap:
         return lm
 
     def delete_landmark(self, lm_id: str) -> bool:
-        if lm_id in self._landmarks:
-            del self._landmarks[lm_id]
-            self._save()
-            return True
-        return False
+        if lm_id not in self._landmarks:
+            return False
+        removed = self._landmarks.pop(lm_id)
+        if not self._save():
+            self._landmarks[lm_id] = removed
+            logger.error(f"delete_landmark rollback: restored '{lm_id}' after save failure")
+            return False
+        return True
 
     def get_all_landmarks(self) -> List[Landmark]:
         return list(self._landmarks.values())
 
-    # ── Queries ──────────────────────────────────────────────────
+    # -- Queries --
 
     def get_zone_at(self, x: float, y: float) -> Optional[Zone]:
-        """Find which zone a map coordinate falls into (point-in-circle)."""
         best: Optional[Zone] = None
         best_dist = float("inf")
         for z in self._zones.values():
@@ -141,7 +147,6 @@ class SemanticMap:
         return best
 
     def get_zones_for_object(self, object_name: str) -> List[Zone]:
-        """Get zones whose expected_objects contain the target (fuzzy match)."""
         obj_lower = object_name.lower()
         matches = []
         for z in self._zones.values():
@@ -157,7 +162,7 @@ class SemanticMap:
             return (z.center_x, z.center_y)
         return None
 
-    # ── Serialization ────────────────────────────────────────────
+    # -- Serialization --
 
     def to_dict(self) -> dict:
         return {
@@ -205,7 +210,6 @@ class SemanticMap:
             logger.error(f"Failed to load semantic map: {e}")
 
     def _save(self) -> bool:
-        """Persist to JSON. Returns True on verified write, False on failure."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = self.to_dict()
@@ -219,16 +223,18 @@ class SemanticMap:
             expected_zones = len(data["zones"])
             actual_zones = len(saved.get("zones", []))
             if expected_zones != actual_zones:
-                logger.error(f"❌ semantic_map save VERIFICATION FAILED: "
-                             f"expected {expected_zones} zones, file has {actual_zones}")
+                logger.error(
+                    f"semantic_map save VERIFICATION FAILED: "
+                    f"expected {expected_zones} zones, file has {actual_zones}"
+                )
                 return False
             zone_ids = [z["id"] for z in saved["zones"]]
-            logger.info(f"💾 semantic_map saved: {actual_zones} zones {zone_ids}")
+            logger.info(f"semantic_map saved: {actual_zones} zones {zone_ids}")
             return True
         except Exception as e:
-            logger.error(f"❌ Failed to save semantic map: {e}")
+            logger.error(f"Failed to save semantic map: {e}")
             return False
 
 
-# ── Singleton ────────────────────────────────────────────────────
+# Singleton — loaded once at import time
 semantic_map = SemanticMap()

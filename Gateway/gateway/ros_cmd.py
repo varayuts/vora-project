@@ -90,19 +90,40 @@ class MotionPublisher:
             print(f"📡 Publishing {loop_count} messages at 10Hz for {duration}s")
             
             interrupted = False
+            _obs_blocked = 0       # consecutive blocked ticks for debounce
+            _OBS_DEBOUNCE = 3      # require 3 consecutive hits before interrupting
             for i in range(loop_count):
                 # Real-time obstacle interrupt: check LiDAR EVERY iteration (~0.1s)
                 if obstacle_checker and lx > 0:
-                    # Forward motion: check front cone (±16°–60°)
+                    # Forward motion: debounced frontal stop.
+                    # Single noisy scan returns do NOT interrupt — require
+                    # _OBS_DEBOUNCE consecutive blocked ticks (~0.3s) before stopping.
                     if obstacle_checker():
-                        print(f"🛑 LIDAR INTERRUPT at step {i}/{loop_count} — obstacle detected during motion!")
-                        interrupted = True
-                        break
+                        _obs_blocked += 1
+                        if _obs_blocked >= _OBS_DEBOUNCE:
+                            print(
+                                f"🛑 LIDAR INTERRUPT at step {i}/{loop_count} "
+                                f"— {_obs_blocked} consecutive blocked ticks"
+                            )
+                            interrupted = True
+                            break
+                        else:
+                            print(
+                                f"⚠️ OBS WARN step {i}/{loop_count} "
+                                f"— blocked tick {_obs_blocked}/{_OBS_DEBOUNCE} (continuing)"
+                            )
+                    else:
+                        _obs_blocked = 0  # reset on any clear reading
 
-                if rear_obstacle_checker and (lx < 0 or (abs(az) > 0.01 and abs(lx) < 0.01)):
-                    # Backward or pure rotation: check rear/side sectors (±90°–165°)
+                if rear_obstacle_checker and lx < 0:
+                    # Reverse motion only: fire rear/side interrupt.
+                    # Pure rotation NO LONGER triggers rear check — rotation doesn't
+                    # translate the robot, and the rear scan band is only a narrow
+                    # side-rear strip (LiDAR ±115° arc), so it was firing at step 0
+                    # on every in-place turn near a wall. Rotation safety is now
+                    # owned by Gateway preflight + Nav2 costmap inflation.
                     if rear_obstacle_checker():
-                        print(f"🛑 REAR OBSTACLE at step {i}/{loop_count} — rear/side obstacle during {'backward' if lx < 0 else 'rotation'}!")
+                        print(f"🛑 REAR OBSTACLE at step {i}/{loop_count} — blocking reverse")
                         interrupted = True
                         break
 

@@ -276,6 +276,21 @@ class Nav2Client:
         logger.info(f"Nav2 result: {result_data['status']} in {result_data['duration']:.1f}s")
         return result_data
 
+    async def navigate_to_zone(self, x: float, y: float, timeout: float = 30.0) -> bool:
+        """Navigate to a semantic zone anchor (x,y) in the map frame.
+        Thin wrapper around navigate_to_pose returning a simple bool.
+        Returns True on SUCCEEDED, False on ABORTED / TIMEOUT / connection failure.
+        """
+        result = await self.navigate_to_pose(
+            x=x, y=y, theta=0.0, frame_id="map", timeout=timeout,
+        )
+        ok = bool(result.get("success")) and result.get("status") == "SUCCEEDED"
+        logger.info(
+            f"🎯 navigate_to_zone({x:.2f},{y:.2f}) → {'OK' if ok else 'FAIL'} "
+            f"({result.get('status')})"
+        )
+        return ok
+
     async def cancel_navigation(self):
         """Cancel the current navigation goal."""
         if self._current_goal:

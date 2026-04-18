@@ -1,0 +1,61 @@
+{
+  "zones": [
+    {
+      "id": "living room",
+      "label_th": "ห้องนั่งเล่น",
+      "label_en": "living room",
+      "center_x": -1.601,
+      "center_y": 0.028,
+      "radius": 0.9,
+      "expected_objects": [
+        "white Sofa",
+        "White table"
+      ],
+      "notes": "White sofa will appear as a white block \nand white table appear as a cyrinder white table",
+      "color": "#dc9e18",
+      "source": "manual"
+    },
+    {
+      "id": "entrance",
+      "label_th": "หน้าประตู",
+      "label_en": "Entrance",
+      "center_x": -0.064,
+      "center_y": 0.222,
+      "radius": 0.7,
+      "expected_objects": [],
+      "notes": "sometime can appear some stuff",
+      "color": "#15b728",
+      "source": "manual"
+    },
+    {
+      "id": "toilet",
+      "label_th": "ห้องน้ำ",
+      "label_en": "toilet",
+      "center_x": -1.49,
+      "center_y": -1.306,
+      "radius": 0.8,
+      "expected_objects": [
+        "toilet"
+      ],
+      "notes": "toilet = โถส้วม",
+      "color": "#1e87c8",
+      "source": "manual"
+    },
+    {
+      "id": "bedroom",
+      "label_th": "ห้องนอน",
+      "label_en": "bedroom",
+      "center_x": -0.024,
+      "center_y": -1.133,
+      "radius": 0.8,
+      "expected_objects": [
+        "Bed",
+        "Table"
+      ],
+      "notes": "Bed will appear as white block and sometime some will appear above the bed and small white table",
+      "color": "#403371",
+      "source": "manual"
+    }
+  ],
+  "landmarks": []
+}

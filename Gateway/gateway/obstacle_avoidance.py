@@ -29,9 +29,12 @@ import httpx
 logger = logging.getLogger("obstacle")
 
 # Configuration
-FRONT_ANGLE_DEG = 60       # ±30° from front = 60° cone
-OBSTACLE_WARN_M = 0.8      # Warning distance (slow down)
-OBSTACLE_STOP_M = 0.3      # Emergency stop distance
+FRONT_ANGLE_DEG = 40       # ±20° from front = 40° cone (narrowed from 60°)
+FORWARD_CONE_DEG = 20      # half-angle for forward-priority check
+SAFE_FORWARD = 0.45        # [SAFETY] hard stop: any forward reading below this blocks motion
+NAV_SAFE_FORWARD = 0.30    # [SAFETY] minimum forward clearance to START navigation
+OBSTACLE_WARN_M = 0.6      # Warning distance (slow down) — was 0.8
+OBSTACLE_STOP_M = 0.20     # Emergency stop distance — was 0.3
 SCAN_TOPIC = "/scan"        # ROS LaserScan topic
 AVOIDANCE_SPEED = 0.10      # Slow avoidance speed (m/s)
 AVOIDANCE_ANGULAR = 0.40    # Avoidance turn speed (rad/s)
@@ -119,8 +122,13 @@ class ObstacleAvoidance:
         
         try:
             import roslibpy
+            # queue_size=10 → rosbridge passes this as queue_length to its internal
+            # subscriber. True QoS (BEST_EFFORT / VOLATILE) must be set on the robot's
+            # rosbridge_server node; roslibpy WebSocket clients cannot set QoS profiles
+            # directly. This matches the YDLidar G2 driver's BEST_EFFORT publisher.
             self._scan_sub = roslibpy.Topic(
-                self._ros, SCAN_TOPIC, "sensor_msgs/LaserScan"
+                self._ros, SCAN_TOPIC, "sensor_msgs/LaserScan",
+                queue_size=10, latch=False,
             )
             self._scan_sub.subscribe(self._on_scan)
             logger.info(f"✅ Obstacle avoidance started (LiDAR: {SCAN_TOPIC})")
@@ -240,13 +248,57 @@ class ObstacleAvoidance:
                 self._sector_distances[s] = float('inf')
             self._sector_min_distances[s] = sector_mins[s]
     
+    def _get_range_at(self, target_deg: float, tol_deg: float = 3.0) -> Optional[float]:
+        """Return the minimum valid range within ±tol_deg of target_deg (front=0).
+        None if no valid readings in that arc."""
+        if not self._last_scan_ranges:
+            return None
+        tgt = math.radians(target_deg)
+        tol = math.radians(tol_deg)
+        best = float('inf')
+        for i, r in enumerate(self._last_scan_ranges):
+            if not (self._last_range_min <= r <= self._last_range_max):
+                continue
+            angle = self._last_angle_min + i * self._last_angle_increment + LIDAR_ANGLE_OFFSET_RAD
+            if LIDAR_MIRROR:
+                angle = -angle
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+            if abs(angle - tgt) <= tol:
+                if r < best:
+                    best = r
+        return best if best != float('inf') else None
+
     def get_obstacle_checker(self):
         """Return a synchronous callable for exec_motion's obstacle_checker param.
-        Uses get_forward_clearance() to skip the LiDAR dead zone (±0-15°) which
-        can return junk near-zero values and cause false positives on forward motion."""
+
+        Uses a NARROW ±15° true-frontal cone at 0.18 m — side walls and corridor
+        edges are intentionally ignored here.  Debounce (3 consecutive blocked
+        ticks before interrupt) is enforced by exec_motion, not by this function.
+
+        Logs:
+            [LIDAR] forward cone=±15°, min=0.18m   — every tick
+            [LIDAR] BLOCK CONFIRMED → STOP          — in exec_motion after debounce
+        """
+        _CONE_DEG = 15
+        _STOP_M = 0.18
+
         def _check():
-            fwd = self.get_forward_clearance()
-            return fwd < OBSTACLE_STOP_M
+            # Never block motion when scan data is absent — a dead/late LiDAR
+            # must not suppress Nav2 or cmd_vel motion.
+            if not self._last_scan_ranges:
+                logger.info("[LIDAR] no scan → skip obstacle check")
+                return False
+
+            front = self._get_range_at(0, tol_deg=_CONE_DEG)
+            _f = f"{front:.2f}" if front is not None else "—"
+            logger.info(f"[LIDAR] forward cone=±{_CONE_DEG}°, min={_f}m")
+            if front is not None and front < _STOP_M:
+                return True
+            return False
+
         return _check
     
     def find_best_direction(self) -> Dict[str, Any]:
@@ -386,16 +438,27 @@ class ObstacleAvoidance:
         
         This method checks individual rays from ±16° to ±60° as the best
         available proxy for what's ahead of the robot.
-        Returns minimum distance, or float('inf') if no valid readings.
+        [SAFETY] DEAD/None/inf are IGNORED (not treated as obstacle). If no
+        valid rays fall in the forward cone we return 10.0 — "assume clear"
+        — so a dead/partial LiDAR cannot hard-block navigation.
         """
+        NO_DATA = 10.0
         if not self._last_scan_ranges:
-            return float('inf')
-        
+            return NO_DATA
+
         min_dist = float('inf')
+        valid_count = 0
         check_lo = math.radians(16)   # just past dead zone edge
-        check_hi = math.radians(60)   # up to 60° — cos-projection removed so 60° is safe (was 40° as workaround)
+        check_hi = math.radians(60)   # up to 60° — cos-projection removed so 60° is safe
 
         for i, r in enumerate(self._last_scan_ranges):
+            if r is None:
+                continue
+            try:
+                if not math.isfinite(r):
+                    continue
+            except Exception:
+                continue
             if not (self._last_range_min <= r <= self._last_range_max):
                 continue
             raw_angle = self._last_angle_min + i * self._last_angle_increment
@@ -410,8 +473,47 @@ class ObstacleAvoidance:
             abs_angle = abs(angle)
             if check_lo <= abs_angle <= check_hi:
                 min_dist = min(min_dist, r)
+                valid_count += 1
 
+        if valid_count == 0 or not math.isfinite(min_dist):
+            return NO_DATA
         return min_dist
+
+    def has_rear_scan_data(self) -> bool:
+        """True iff we have at least one valid ray in the side-rear band (±90–110°).
+        Used to enforce: no reverse motion unless the rear band is actually lit.
+
+        The LiDAR blind spot (rear ~130°) means 'rear clearance' is never fully
+        known — but the ±90–110° side-rear band is the only data we have, so we
+        require at least N valid rays in it before trusting any reverse command."""
+        if not self._last_scan_ranges:
+            return False
+        check_lo = math.radians(90)
+        check_hi = math.radians(min(110, SCAN_HALF_ARC_DEG - 5))
+        valid = 0
+        for i, r in enumerate(self._last_scan_ranges):
+            if r is None:
+                continue
+            try:
+                if not math.isfinite(r):
+                    continue
+            except Exception:
+                continue
+            if not (self._last_range_min <= r <= self._last_range_max):
+                continue
+            raw_angle = self._last_angle_min + i * self._last_angle_increment
+            angle = raw_angle + LIDAR_ANGLE_OFFSET_RAD
+            if LIDAR_MIRROR:
+                angle = -angle
+            while angle > math.pi:
+                angle -= 2 * math.pi
+            while angle < -math.pi:
+                angle += 2 * math.pi
+            if check_lo <= abs(angle) <= check_hi:
+                valid += 1
+                if valid >= 3:
+                    return True
+        return False
 
     def get_rear_obstacle_checker(self, threshold_m: float = 0.15):
         """Return callable that checks rear+side sectors for obstacles.

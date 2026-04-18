@@ -1,135 +1,37 @@
 {
-  "next_id": 23,
+  "next_id": 3,
   "observations": [
     {
-      "id": 15,
-      "timestamp": 1774430828.39224,
-      "x": -0.475,
-      "y": -0.787,
-      "theta": -0.0014,
+      "id": 1,
+      "timestamp": 1776486555.3241513,
+      "x": 0.302,
+      "y": 0.405,
+      "theta": -0.0018,
       "heading_deg": 359.9,
-      "description": "In the image, the following objects are visible:  \n\n1. **Left surface**: Color is light gray, shape is a flat, smooth panel, position is left.  \n2. **Right surface**: Color is light gray, shape is a flat, smooth panel, position is right.  \n3. **Vertical strip (center)**: Color is light gray (with small, evenly spaced notches along its edge), shape is a narrow vertical strip (likely a panel edge or seam), position is center.  \n\nNo cylindrical objects (e.g., water bottles) are present in the image",
+      "description": "The main object is a water bottle. Let's check: it's a plastic bottle with a blue cap, label says \"น้ำดื่ม\" (which is Thai for drinking water). The bottle is clear, so we can see the water inside. Position: it's on the green surface, towards the right side of the image, maybe center-right? Wait, the image shows a green table or floor. The bottle is standing on the green surface, near the corner where two white walls meet. So position: center-right? Let's see. The bottle is in the right part of t",
       "objects_mentioned": [
-        "panel",
-        "light"
+        "floor",
+        "bottle",
+        "table",
+        "wall"
       ],
       "phase": "phase0_current",
       "search_target": "ขวดน้ำ"
     },
     {
-      "id": 16,
-      "timestamp": 1774430872.9159803,
-      "x": -0.475,
-      "y": -0.787,
-      "theta": -0.0014,
+      "id": 2,
+      "timestamp": 1776486602.519642,
+      "x": 0.482,
+      "y": 0.405,
+      "theta": -0.0018,
       "heading_deg": 359.9,
-      "description": "In the image, the following objects are visible:  \n\n1. **Left wall**: White, rectangular (flat surface), positioned on the left side of the image.  \n2. **Right wall**: White, rectangular (flat surface), positioned on the right side of the image.  \n3. **Floor**: Black and white patterned (irregular shapes), covering the lower portion of the image (center to left/right).  \n4. **Baseboard**: White, narrow rectangular trim, running along the bottom edge where the walls meet the floor (center, at the",
+      "description": "### Objects Observed:  \n1. **Vertical metal strip**:  \n   - Color: Silver (metallic gray)  \n   - Shape: Rectangular (vertical, thin)  \n   - Position: Center (dominates the vertical center of the image)  \n\n2. **White wall**:  \n   - Color: White  \n   - Shape: Large flat surface (covers background)  \n   - Position: Background (left, center, and right of the metal strip)  \n\n3. **Floor section (bottom left corner)**:  \n   - Color: Yellow and green (small patch of flooring)  \n   - Shape: Small rectang",
       "objects_mentioned": [
-        "container",
-        "wall",
-        "bottle",
-        "floor"
+        "floor",
+        "wall"
       ],
-      "phase": "agent_s1_t+45",
-      "search_target": "ขวดน้ำ"
-    },
-    {
-      "id": 17,
-      "timestamp": 1774430904.9351244,
-      "x": -0.475,
-      "y": -0.787,
-      "theta": -0.0014,
-      "heading_deg": 359.9,
-      "description": "The image shows a plain white surface with a thin vertical seam or fold running down the center. There are no objects (including water bottles, cylindrical shapes, or any items) visible in the image.  \n\n- **Left**: Smooth white surface (no objects).  \n- **Center**: Thin vertical seam/fold (no objects).  \n- **Right**: Smooth white surface (no objects).  \n\nNo open path, corridor, or doorway is visible in any direction (LEFT/CENTER/RIGHT). All elements are part of the plain white background with th",
-      "objects_mentioned": [],
-      "phase": "agent_s2_t+45",
-      "search_target": "ขวดน้ำ"
-    },
-    {
-      "id": 18,
-      "timestamp": 1774430950.3072617,
-      "x": -0.475,
-      "y": -0.787,
-      "theta": -0.0014,
-      "heading_deg": 359.9,
-      "description": "First, the main elements: there's a white cabinet or structure on the left, a white panel or door in the center, and the floor is a speckled pattern. Now, check for water bottles. The task says to find a cylindrical shape, plastic or metal. But in the image, are there any such objects? Let's see. The image shows the floor, part of a wall, and a white structure. There are no water bottles visible. Let's list all objects:\n\n1. The white structure on the left (maybe a wall or cabinet): color white, ",
-      "objects_mentioned": [
-        "door",
-        "bottle",
-        "cabinet",
-        "wall",
-        "panel",
-        "floor"
-      ],
-      "phase": "agent_s3_t+105",
-      "search_target": "ขวดน้ำ"
-    },
-    {
-      "id": 19,
-      "timestamp": 1774430998.7383718,
-      "x": -0.215,
-      "y": -0.787,
-      "theta": -0.0014,
-      "heading_deg": 359.9,
-      "description": "The picture shows a white door or wall, part of a corner. The bottom has a patterned floor, maybe tile. Let's check for objects. The main things: the door is white, rectangular, on the left side (the edge of the door is visible on the left). The floor has a black and white pattern, but no water bottle. Are there any cylindrical objects? The image doesn't show any water bottle, or any cylindrical shape that's a drink container. Let's check all areas. The door is white, the floor is patterned, and",
-      "objects_mentioned": [
-        "bottle",
-        "door",
-        "container",
-        "wall",
-        "floor"
-      ],
-      "phase": "agent_mv1_fwd",
-      "search_target": "ขวดน้ำ"
-    },
-    {
-      "id": 20,
-      "timestamp": 1774431047.9392397,
-      "x": -0.215,
-      "y": -0.787,
-      "theta": -0.0014,
-      "heading_deg": 359.9,
-      "description": "First, the main elements: there's a white wall on the left and center, a white baseboard, and a floor with a black and white pattern. Then, near the right side, there's a small white object that looks like a plastic cap or maybe a small container. Let's check each part.\n\nFirst, describe all objects. The wall is white, large, rectangular, left/center. The baseboard is white, long, rectangular, along the bottom. The floor has a pattern, but it's the surface. Then the small object: it's a white, cy",
-      "objects_mentioned": [
-        "container",
-        "wall",
-        "bottle",
-        "floor"
-      ],
-      "phase": "agent_s5_t-105",
-      "search_target": "ขวดน้ำ"
-    },
-    {
-      "id": 21,
-      "timestamp": 1774431093.5502744,
-      "x": -0.215,
-      "y": -0.787,
-      "theta": -0.0014,
-      "heading_deg": 359.9,
-      "description": "First, the main thing is the floor with a speckled pattern. The walls are white, and there's a yellowish door on the right. Now, the robot is looking for a water bottle. Let's check all objects.\n\nFirst, list all visible objects:\n\n1. The floor: it's a large area with a black and white speckled pattern. But the floor is the surface, not an object to search for. The robot is looking for a water bottle, so check if there's any cylindrical object.\n\n2. The white panels on the left: they look like wall",
-      "objects_mentioned": [
-        "bottle",
-        "wall",
-        "door",
-        "floor"
-      ],
-      "phase": "agent_s6_t+75",
-      "search_target": "ขวดน้ำ"
-    },
-    {
-      "id": 22,
-      "timestamp": 1774431143.0036883,
-      "x": 0.008,
-      "y": -0.787,
-      "theta": -0.0014,
-      "heading_deg": 359.9,
-      "description": "First, the main object is a water bottle. Let's check its details. The bottle is clear plastic, cylindrical, with a blue label. It's in the center-left area of the image. Then, there's a white object on the left, maybe a cap or something small. Also, the background has a white partition with \"ENG KUTNE\" text, but that's not the target. Now, the floor is the main surface, with a patterned tile. \n\nLet's list all objects:\n\n1. Water bottle: name is water bottle, color is clear (plastic), shape is cy",
-      "objects_mentioned": [
-        "bottle",
-        "floor"
-      ],
-      "phase": "agent_mv2_fwd",
-      "search_target": "ขวดน้ำ"
+      "phase": "phase0_current",
+      "search_target": "ปากกาที่พื้นหน้าประตู"
     }
   ]
 }

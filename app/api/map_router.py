@@ -62,14 +62,21 @@ _robot_pose = {
 
 _object_markers: list = []   # [{name, x, y, zone, last_seen, confidence}, ...]
 
+# Authoritative full object memory (Server is sole source of truth).
+# Shape: {object_name: [record_dict, ...]} — matches Gateway's ObjectMemory on-wire format.
+# Gateway pushes full state via POST /map/objects/full and fetches it back
+# via GET /map/objects/full before each search. Local Gateway files are
+# no longer consulted for planning; deletions here propagate immediately.
+_object_memory_full: dict = {}
+
 # Trail history: accumulated from pose pushes (survives page refresh)
 _trail_history: list = []    # [{x, y, t}, ...]
 _TRAIL_MAX = 2000
 _trail_last_x = 0.0
 _trail_last_y = 0.0
 
-# Semantic map annotations (pushed from Gateway)
-_annotations: dict = {"zones": [], "landmarks": []}
+# Server-owned semantic map (THE source of truth for zones + landmarks)
+from app.semantic_map import semantic_map, Zone, Landmark
 
 # Raw occupancy grid (grayscale, cropped) for navigation checks
 _occupancy_grid = None  # numpy array: 0=wall, 254=free, 205=unknown
@@ -214,7 +221,7 @@ async def get_map_state():
         "robot": _robot_pose,
         "objects": _object_markers,
         "trail": _trail_history[-500:],  # last 500 points for rendering
-        "annotations": _annotations,
+        "annotations": semantic_map.to_dict(),
         "map": {
             "width": _map_info.get("width", 0),
             "height": _map_info.get("height", 0),
@@ -263,6 +270,58 @@ async def push_object_markers(request: Request):
         return {"ok": True, "count": len(_object_markers)}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# ── Authoritative object memory endpoints (Server is source of truth) ─
+
+@router.get("/objects/full")
+async def get_object_memory_full():
+    """Return the full object memory dict. Gateway fetches this before
+    every search so planning is driven only by Server state — never by
+    stale local files."""
+    return JSONResponse(_object_memory_full)
+
+
+@router.post("/objects/full")
+async def push_object_memory_full(request: Request):
+    """Gateway pushes full object memory state. Full replacement semantics.
+
+    Any records not present in the incoming payload are dropped, so this
+    is the single mechanism that propagates Gateway-side remembers/clears
+    forward without drifting from the Server copy.
+    """
+    global _object_memory_full
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return JSONResponse({"ok": False, "error": "expect dict"}, status_code=400)
+        _object_memory_full = data
+        total = sum(len(v) for v in data.values() if isinstance(v, list))
+        logger.info(f"[MEM] full-memory push: {len(data)} objects / {total} records")
+        return {"ok": True, "objects": len(data), "records": total}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.delete("/objects")
+async def delete_all_objects():
+    """Delete ALL object memory (authoritative). Propagates to Gateway on
+    its next reload()."""
+    global _object_memory_full, _object_markers
+    _object_memory_full = {}
+    _object_markers = []
+    logger.info("[MEM] DELETE all — object memory cleared on Server")
+    return {"ok": True}
+
+
+@router.delete("/objects/{object_name}")
+async def delete_one_object(object_name: str):
+    """Delete memory for a single object name (authoritative)."""
+    global _object_memory_full, _object_markers
+    removed = _object_memory_full.pop(object_name, None)
+    _object_markers = [m for m in _object_markers if m.get("name") != object_name]
+    logger.info(f"[MEM] DELETE '{object_name}' — removed={bool(removed)}")
+    return {"ok": True, "removed": bool(removed)}
 
 
 # ── Navigation helpers ────────────────────────────────────────────────
@@ -364,11 +423,22 @@ async def relocalize(request: Request):
     global _robot_pose, _trail_last_x, _trail_last_y
     try:
         data = await request.json()
-        x = float(data.get("x", 0))
-        y = float(data.get("y", 0))
-        theta = float(data.get("theta", 0))
+        if "theta" not in data:
+            return JSONResponse(
+                {"ok": False, "error": "theta is required (use 2-click Set Pose)"},
+                status_code=400,
+            )
+        x = float(data["x"])
+        y = float(data["y"])
+        theta = float(data["theta"])
     except (KeyError, TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "need x, y, theta"}, status_code=400)
+
+    import math as _m
+    logger.info(
+        f"📍 /map/relocalize received: x={x:.3f} y={y:.3f} "
+        f"theta={theta:.3f}rad ({_m.degrees(theta):.1f}°)"
+    )
 
     # Immediately update server-side pose for responsive UI
     _robot_pose = {
@@ -405,64 +475,92 @@ async def relocalize(request: Request):
     })
 
 
-# ── Semantic Map Annotations ─────────────────────────────────────────
-
-@router.post("/annotations/push")
-async def push_annotations(request: Request):
-    """Gateway pushes semantic map annotations here."""
-    global _annotations
-    try:
-        _annotations = await request.json()
-        return {"ok": True}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-
+# ── Semantic Map Annotations (Server-owned) ─────────────────────────
+# The Server is the SOLE owner of semantic map data.
+# No Gateway proxy — CRUD operates directly on app/data/semantic_map.json.
+# Gateway fetches read-only via GET /map/annotations for search planning.
 
 @router.get("/annotations")
 async def get_annotations():
-    """Return cached annotations (pushed from Gateway)."""
-    return JSONResponse(_annotations)
-
-
-async def _forward_to_gateway(path: str, json_data=None, method: str = "POST"):
-    """Forward a request to Gateway and return the response."""
-    import httpx
-    from app.core.settings import Settings
-    gw_url = Settings().GATEWAY_URL
-    url = f"{gw_url}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            if method == "DELETE":
-                r = await client.delete(url)
-            else:
-                r = await client.post(url, json=json_data)
-        return JSONResponse(r.json(), status_code=r.status_code)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+    """Return all zones + landmarks. Gateway fetches this for search planning."""
+    return JSONResponse(semantic_map.to_dict())
 
 
 @router.post("/annotations/zone")
-async def proxy_upsert_zone(request: Request):
-    """Proxy: create/update zone on Gateway."""
-    return await _forward_to_gateway("/annotations/zone", await request.json())
+async def upsert_zone(request: Request):
+    """Create or update a semantic zone (Server-owned)."""
+    data = await request.json()
+    zone = Zone(
+        id=data["id"],
+        label_th=data.get("label_th", ""),
+        label_en=data.get("label_en", ""),
+        center_x=float(data.get("center_x", 0)),
+        center_y=float(data.get("center_y", 0)),
+        radius=float(data.get("radius", 0.8)),
+        expected_objects=data.get("expected_objects", []),
+        notes=data.get("notes", ""),
+        color=data.get("color", "#3b82f6"),
+        source=data.get("source", "manual"),
+    )
+    ok = semantic_map.add_zone(zone)
+    zone_ids = [z.id for z in semantic_map.get_all_zones()]
+    logger.info(f"📝 [ann] UPSERT zone '{zone.id}' ok={ok} | zones: {zone_ids}")
+    if not ok:
+        return JSONResponse({"ok": False, "reason": "save_failed"}, status_code=500)
+    return {"ok": True, "zone_id": zone.id}
 
 
 @router.delete("/annotations/zone/{zone_id}")
-async def proxy_delete_zone(zone_id: str):
-    """Proxy: delete zone on Gateway."""
-    return await _forward_to_gateway(f"/annotations/zone/{zone_id}", method="DELETE")
+async def delete_zone(zone_id: str):
+    """Delete a semantic zone (Server-owned)."""
+    ok = semantic_map.delete_zone(zone_id)
+    zone_ids = [z.id for z in semantic_map.get_all_zones()]
+    logger.info(f"🗑️ [ann] DELETE zone '{zone_id}' ok={ok} | remaining: {zone_ids}")
+    if not ok:
+        # Check if zone simply didn't exist vs save failure
+        if not semantic_map.get_zone(zone_id):
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        return JSONResponse({"ok": False, "reason": "save_failed"}, status_code=500)
+    return {"ok": True}
 
 
 @router.post("/annotations/landmark")
-async def proxy_upsert_landmark(request: Request):
-    """Proxy: create/update landmark on Gateway."""
-    return await _forward_to_gateway("/annotations/landmark", await request.json())
+async def upsert_landmark(request: Request):
+    """Create or update a landmark (Server-owned)."""
+    data = await request.json()
+    lm = Landmark(
+        id=data["id"],
+        label=data.get("label", ""),
+        x=float(data.get("x", 0)),
+        y=float(data.get("y", 0)),
+        zone_id=data.get("zone_id", ""),
+        category=data.get("category", ""),
+        notes=data.get("notes", ""),
+    )
+    ok = semantic_map.add_landmark(lm)
+    logger.info(f"📝 [ann] UPSERT landmark '{lm.id}' ok={ok}")
+    if not ok:
+        return JSONResponse({"ok": False, "reason": "save_failed"}, status_code=500)
+    return {"ok": True, "landmark_id": lm.id}
 
 
 @router.delete("/annotations/landmark/{lm_id}")
-async def proxy_delete_landmark(lm_id: str):
-    """Proxy: delete landmark on Gateway."""
-    return await _forward_to_gateway(f"/annotations/landmark/{lm_id}", method="DELETE")
+async def delete_landmark(lm_id: str):
+    """Delete a landmark (Server-owned)."""
+    ok = semantic_map.delete_landmark(lm_id)
+    logger.info(f"🗑️ [ann] DELETE landmark '{lm_id}' ok={ok}")
+    if not ok:
+        if not any(l.id == lm_id for l in semantic_map.get_all_landmarks()):
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        return JSONResponse({"ok": False, "reason": "save_failed"}, status_code=500)
+    return {"ok": True}
+
+
+@router.post("/annotations/push")
+async def push_annotations_legacy(request: Request):
+    """Legacy endpoint — Gateway may still call this. Ignored; Server owns data now."""
+    logger.info("[ann] Ignored legacy Gateway push — Server owns semantic map")
+    return {"ok": True}
 
 
 # ── Load map on import ────────────────────────────────────────────────

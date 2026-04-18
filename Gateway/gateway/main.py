@@ -1,11 +1,12 @@
 import os, asyncio, json, re, logging, math, time
 from typing import Optional, List, Dict
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
 import websockets
+from typing import Any, Dict
 
 from gateway.audio_proxy import upstream_stt_proxy
 from gateway.intent_parser import (
@@ -15,11 +16,16 @@ from gateway.intent_parser import (
 from gateway.ros_cmd import MotionPublisher, WaypointSender, ensure_ros, GOAL_FRAME, USE_ACTION
 from gateway.obstacle_avoidance import ObstacleAvoidance
 from gateway.camera_stream import get_camera, start_camera, stop_camera
-from gateway.object_memory import object_memory, get_section, location_to_bearing
+from gateway.object_memory import (
+    object_memory, get_section, location_to_bearing,
+    set_server_base as _set_object_memory_server_base,
+)
 from gateway.spatial_memory import spatial_memory
 from gateway.semantic_map import semantic_map, Zone, Landmark
-from gateway.search_planner import SearchPlanner
-from gateway.nav2_client import Nav2Client
+from gateway.search_planner import SearchPlanner, extract_zone_intent, find_memory_anchor
+# Legacy Gateway-side Nav2 roslibpy ActionClient path is disabled.
+# See gateway/robot_nav_bridge.py for the authoritative /vora/command route.
+from gateway.robot_nav_bridge import RobotNavBridge as Nav2Client
 
 # Setup logging with colors
 logging.basicConfig(
@@ -288,6 +294,8 @@ _search_active = False
 _search_cancel = False
 _search_cancel_event: asyncio.Event = asyncio.Event()   # instant wakeup for _cancellable_vlm_check
 _last_search_result: Optional[Dict] = None   # cached for polling from webapp (mixed-content WS fallback)
+_current_search_target: str = ""              # tracks active search target for duplicate-query dedup
+_memory_block_until: float = 0.0              # epoch-secs; remember() writes are suppressed until this time (set by relocalize)
 
 
 async def _broadcast_and_cache(msg_dict: dict):
@@ -389,10 +397,11 @@ async def visual_search(
     - Finds objects that are behind/beside the robot immediately
     - Each 360° scan = 4 VLM checks (~80s), but covers every angle
     """
-    global _search_active, _search_cancel
+    global _search_active, _search_cancel, _current_zone, _current_search_target
     _search_active = True
     _search_cancel = False
     _search_cancel_event.clear()
+    _current_search_target = target_object
 
     # Display name for TTS/UI — use original Thai target, not enriched English
     _display = display_name or target_object
@@ -412,11 +421,102 @@ async def visual_search(
     
     # Normalize target name to official item if possible
     normalized_target = normalize_search_target(_display)
-    
-    # Check memory for previous location
+
+    # [SAFETY] Reset Nav2 abort counter at the start of each new search so
+    # stale failures from a previous attempt can't permanently block nav.
+    try:
+        if _nav2_client is not None and hasattr(_nav2_client, "reset_failure_guard"):
+            _nav2_client.reset_failure_guard()
+    except Exception:
+        pass
+
+    # ── [MEM] Authoritative reload before search ──
+    # Fetch the authoritative object memory from the Server so anything
+    # deleted/edited via the UI takes effect *now*. Local Gateway disk
+    # is no longer consulted — see object_memory.set_server_base().
+    try:
+        _mem_count = object_memory.reload()
+        logger.info(
+            f"[MEM] loaded objects: {len(object_memory.get_all_objects())} "
+            f"records: {_mem_count}"
+        )
+    except Exception as _e:
+        logger.warning(f"[MEM] reload failed: {_e}")
+
+    # Check memory for previous location.
+    # [MEM] Zone-filter: if the user's query explicitly names a target room
+    # and the robot is currently in a DIFFERENT zone, memory is untrusted
+    # for this search — stale cross-zone hints were biasing TTS and the
+    # decision layer into wrong-room wandering. Ignore the hint entirely.
     memory_hint = object_memory.get_search_hint(normalized_target)
+    try:
+        _early_tgt_zone, _ = extract_zone_intent(
+            f"{_display} {normalized_target}", semantic_map
+        )
+    except Exception:
+        _early_tgt_zone = None
+    if memory_hint and _early_tgt_zone:
+        _cz_obj = semantic_map.get_zone_at(
+            _robot_pose.get("x", 0.0), _robot_pose.get("y", 0.0)
+        )
+        _cz_id = _cz_obj.id if _cz_obj else _current_zone
+        if _cz_id != _early_tgt_zone:
+            logger.info(
+                f"[MEM] ignoring memory_hint — target_zone='{_early_tgt_zone}' "
+                f"!= current_zone='{_cz_id}' (cross-zone memory is untrusted)"
+            )
+            memory_hint = None
     if memory_hint:
         logger.info(f"📚 Memory hint: {memory_hint}")
+
+    # ── Split OBJECT from ZONE for VLM/LLM matching ──
+    # User queries like "ขวดน้ำที่นั่งเล่น" have an object part ("ขวดน้ำ") and a
+    # zone part ("ที่นั่งเล่น"). The zone decides WHERE to search; once the
+    # robot is in the right zone, confirmation must focus on the OBJECT only,
+    # not require the VLM scene description to literally repeat the room name.
+    # Otherwise correct sightings get rejected because "ที่นั่งเล่น" is missing
+    # from the scene text. We strip zone-phrase tokens here and pass the
+    # cleaned target to all VLM/LLM checks. The original `target_object` is
+    # left untouched for TTS/UI/memory paths.
+    try:
+        from gateway.search_planner import _ZONE_ALIASES as _SP_ZONE_ALIASES
+    except Exception:
+        _SP_ZONE_ALIASES = {}
+
+    def _strip_zone_phrase(text: str, zone_id) -> str:
+        if not text or not zone_id:
+            return text
+        z = semantic_map.get_zone(zone_id)
+        toks = set()
+        if z:
+            for s in (z.id, getattr(z, "label_en", None), getattr(z, "label_th", None)):
+                if s:
+                    toks.add(s.strip().lower())
+        for alias, zid in _SP_ZONE_ALIASES.items():
+            if zid == zone_id and alias:
+                toks.add(alias.strip().lower())
+        out = text
+        for t in sorted(toks, key=len, reverse=True):
+            matched = False
+            for prefix in ("ที่ห้อง", "ที่", "ห้อง", "in the ", "in ", "at the ", "at "):
+                needle = prefix + t
+                idx = out.lower().find(needle)
+                if idx >= 0:
+                    out = out[:idx] + " " + out[idx + len(needle):]
+                    matched = True
+                    break
+            if not matched:
+                idx = out.lower().find(t)
+                if idx >= 0:
+                    out = out[:idx] + " " + out[idx + len(t):]
+        return " ".join(out.split()).strip(" ,.")
+
+    _vlm_query_target = _strip_zone_phrase(target_object, _early_tgt_zone) or target_object
+    if _vlm_query_target != target_object:
+        logger.info(
+            f"[ZONE] split target: object='{_vlm_query_target}' "
+            f"zone='{_early_tgt_zone}' (was '{target_object}')"
+        )
     
     # ── Spatial memory: keep cross-search history for co-location ──
     # Don't clear() — observations from past searches enable:
@@ -487,12 +587,14 @@ async def visual_search(
         announce += f" {colocation_llm_hint[:60]}"
     speak_tts_bg(announce)
 
+    arrived_zone = False  # GO-TO-ZONE state: True after successful navigate_to_zone (locks LOCAL mode)
     stale_count = 0  # track consecutive stale/empty VLM checks (camera/VLM truly dead)
     vlm_reject_count = 0  # track consecutive VLM quality-gate rejections (VLM working but bad output)
     wall_empty_count = 0  # consecutive "wall/empty/floor-only" scenes → stop moving
     good_vlm_count = 0  # total VLM checks that passed quality gate (non-fragment)
     consecutive_found = 0  # consecutive found=true results (for confirmation)
     partial_approach_count = 0  # how many times we've approached a partial match (limit)
+    _last_vlm_reject: Optional[str] = None  # last reject reason: 'target_parrot' | 'prompt_echo' | 'too_short' | None
     MAX_PARTIAL_APPROACHES = 3  # don't chase partial matches forever
     exploration_log = []     # [{"phase": str, "desc": str}] — VLM descriptions per step
     prev_move_angles = []    # directions we moved in Phase 2 (for LLM to avoid repeating)
@@ -510,10 +612,13 @@ async def visual_search(
         d = desc.lower()
         return any(kw in d for kw in _WALL_KEYWORDS)
     
-    async def _cancellable_vlm_check(target: str, timeout: float, retry: bool = False):
+    async def _cancellable_vlm_check(target: str, timeout: float, retry: bool = False, skip_cancel: bool = False):
         """Wrap _vlm_check so _search_cancel can interrupt it mid-flight.
-        Uses asyncio.wait on both VLM task and cancel event for instant response."""
+        skip_cancel=True: run VLM to completion regardless of cancel event (used by
+        LOCAL SEARCH MODE so a mid-nav cancel doesn't suppress the in-room scan)."""
         vlm_task = asyncio.create_task(_vlm_check(target, timeout, retry=retry))
+        if skip_cancel:
+            return await vlm_task
         cancel_wait = asyncio.create_task(_search_cancel_event.wait())
         done, _pending = await asyncio.wait(
             {vlm_task, cancel_wait}, return_when=asyncio.FIRST_COMPLETED,
@@ -529,8 +634,9 @@ async def visual_search(
     async def _do_vlm_and_check(phase_label: str, force: bool = False, broadcast_extra: dict = None) -> bool:
         """Helper: run VLM check, handle stale frames, broadcast progress.
         Returns True if found.  Set force=True after forward moves to never skip.
-        broadcast_extra: optional dict merged into scanning broadcast (step, action, etc.)"""
-        nonlocal total_checks, stale_count, vlm_reject_count, wall_empty_count, good_vlm_count, consecutive_found, partial_approach_count
+        broadcast_extra: optional dict merged into scanning broadcast (step, action, etc.)
+        Side effect: sets _last_vlm_reject (None / 'target_parrot' / 'prompt_echo' / ...)."""
+        nonlocal total_checks, stale_count, vlm_reject_count, wall_empty_count, good_vlm_count, consecutive_found, partial_approach_count, _last_vlm_reject
 
         # ── Skip-duplicate: don't re-scan same position+heading ──
         if not force:
@@ -543,15 +649,15 @@ async def visual_search(
                 total_checks += 1  # count it but don't waste VLM time
                 return False
 
-        found, location, description, _conf, _reason = await _cancellable_vlm_check(target_object, vlm_timeout)
+        found, location, description, _conf, _reason = await _cancellable_vlm_check(_vlm_query_target, vlm_timeout, skip_cancel=force)
         total_checks += 1
-        
+
         # ── Auto-retry once on prompt_echo or target_parrot with alternate prompt ──
         is_rejected = description.startswith("__REJECTED__:") if description else False
         if is_rejected and ("prompt_echo" in description or "target_parrot" in description):
             logger.info(f"🔄 [{phase_label}] VLM echoed/parroted — retrying with alternate prompt...")
             await asyncio.sleep(0.5)  # brief pause before retry
-            found, location, description, _conf, _reason = await _cancellable_vlm_check(target_object, vlm_timeout, retry=True)
+            found, location, description, _conf, _reason = await _cancellable_vlm_check(_vlm_query_target, vlm_timeout, retry=True, skip_cancel=force)
             total_checks += 1
             is_rejected = description.startswith("__REJECTED__:") if description else False
         
@@ -582,6 +688,7 @@ async def visual_search(
             # Count these toward wall_empty_count so the wall-guard can activate.
             # target_parrot = VLM returned only the target name (e.g. "ขวดน้ำเปล่า") — this may
             # mean the object IS in frame but VLM responded poorly. Do NOT count as wall/empty.
+            _last_vlm_reject = reject_reason
             if reject_reason in ("prompt_echo", "too_short"):
                 wall_empty_count += 1
                 logger.info(f"🧱 Prompt echo/short → treating as wall/empty scene #{wall_empty_count}")
@@ -601,6 +708,7 @@ async def visual_search(
             stale_count = 0
             vlm_reject_count = 0
             good_vlm_count += 1
+            _last_vlm_reject = None
         
         # Track wall/empty scenes — abort forward moves if stuck in dead-end
         # IMPORTANT: Only count as wall when VLM actually SAW a wall, not camera failure
@@ -647,6 +755,29 @@ async def visual_search(
         await _broadcast_and_cache(_broadcast_data)
         
         if found:
+            # ── WRONG-ZONE GUARD ──
+            # User specified a target zone but robot isn't there yet → never
+            # confirm a sighting from the wrong room. e.g. "ขวดน้ำที่นั่งเล่น"
+            # while still in toilet must NOT short-circuit on a toilet bottle.
+            # arrived_zone=True means we've already entered the target zone,
+            # so confirmation proceeds normally.
+            if _early_tgt_zone and not arrived_zone:
+                try:
+                    _cz_now = semantic_map.get_zone_at(
+                        _robot_pose.get("x", 0.0),
+                        _robot_pose.get("y", 0.0),
+                    )
+                    _cz_now_id = _cz_now.id if _cz_now else None
+                except Exception:
+                    _cz_now_id = None
+                if _cz_now_id != _early_tgt_zone:
+                    logger.warning(
+                        f"🚫 [{phase_label}] WRONG-ZONE: VLM saw '{_vlm_query_target}' "
+                        f"but robot is in '{_cz_now_id}' (target='{_early_tgt_zone}') "
+                        f"— refusing to confirm; will navigate to target zone first"
+                    )
+                    consecutive_found = 0
+                    return False
             consecutive_found += 1
             logger.info(f"🎉 Object detected! ({phase_label}) Location: {location} [confirm {consecutive_found}/2]")
             
@@ -656,7 +787,7 @@ async def visual_search(
             if consecutive_found < 2:
                 logger.info("🔁 Confirming detection — re-checking same angle...")
                 await asyncio.sleep(0.5)  # let camera settle
-                found2, loc2, desc2, _conf2, _reason2 = await _cancellable_vlm_check(target_object, vlm_timeout)
+                found2, loc2, desc2, _conf2, _reason2 = await _cancellable_vlm_check(_vlm_query_target, vlm_timeout)
                 total_checks += 1
                 if found2:
                     consecutive_found += 1
@@ -704,7 +835,7 @@ async def visual_search(
                 await asyncio.sleep(0.5)
                 
                 # Re-check with VLM after approaching
-                found_retry, loc_retry, desc_retry, conf_retry, _reason_retry = await _cancellable_vlm_check(target_object, vlm_timeout)
+                found_retry, loc_retry, desc_retry, conf_retry, _reason_retry = await _cancellable_vlm_check(_vlm_query_target, vlm_timeout)
                 total_checks += 1
                 
                 if found_retry and conf_retry >= 0.7:
@@ -852,23 +983,278 @@ async def visual_search(
             return
 
         # ════════════════════════════════════════════════════════════
+        # Phase 0.4: Direct Zone-Name Navigation (GO-TO-ZONE)
+        # If the LLM target itself names a zone (e.g. "bedroom"),
+        # navigate to that zone's anchor BEFORE searching. After arrival,
+        # normal search continues. On failure, fall through to agent loop.
+        # ════════════════════════════════════════════════════════════
+        def _match_zone_by_name(name: str):
+            if not name:
+                return None
+            n = name.strip().lower()
+            for z in semantic_map.get_all_zones():
+                if n == z.id.lower() \
+                   or n == (z.label_en or "").strip().lower() \
+                   or n == (z.label_th or "").strip().lower():
+                    return z
+            return None
+
+        # Explicit zone intent — substring/alias/exit-pattern aware.
+        # Used by both Phase 0.4 (GO-TO-ZONE) and Phase 0.5 (planner override).
+        _explicit_zone_id, _excluded_zone_id = extract_zone_intent(
+            f"{_display} {normalized_target}", semantic_map
+        )
+        _current_zone = semantic_map.get_zone_at(
+            _robot_pose.get("x", 0.0), _robot_pose.get("y", 0.0)
+        )
+        _current_zone_id = _current_zone.id if _current_zone else None
+        if _explicit_zone_id or _excluded_zone_id:
+            logger.info(
+                f"🎯 Zone intent extracted: target={_explicit_zone_id} "
+                f"excluded={_excluded_zone_id} current={_current_zone_id}"
+            )
+
+        if not _search_cancel:
+            # Prefer explicit zone intent (handles compound queries like
+            # "water bottle, bedroom"). Fall back to legacy exact-match.
+            _zone_match = (
+                semantic_map.get_zone(_explicit_zone_id) if _explicit_zone_id else None
+            ) or _match_zone_by_name(normalized_target) or _match_zone_by_name(_display)
+
+            # If the target itself NAMES a zone (e.g. user said "bathroom"
+            # and LLM passed it through as the target), treat it as explicit
+            # so the safety stop below fires on nav failure and Phase 0.5
+            # / SearchPlanner is skipped. Without this, a failed go-to-room
+            # silently degrades into planner wandering.
+            if _zone_match and not _explicit_zone_id:
+                _explicit_zone_id = _zone_match.id
+                logger.info(
+                    f"[ZONE] target is a zone name → promoting to "
+                    f"explicit_zone_id='{_explicit_zone_id}'"
+                )
+
+            # ── SAME-ZONE HARD SKIP ──
+            # If the explicit/matched target zone is the zone the robot is
+            # already standing in, NEVER call go_to_zone again. Force entry
+            # to LOCAL SEARCH MODE by setting arrived_zone=True. This
+            # supersedes the older parrot-only gate (which fired only after a
+            # specific VLM reject) — same-zone redundant nav must be blocked
+            # unconditionally, regardless of why Phase 0 missed.
+            if (
+                _zone_match is not None
+                and _current_zone_id is not None
+                and _current_zone_id == _zone_match.id
+            ):
+                logger.warning(
+                    f"[ZONE] SKIP go_to_zone — already in target zone "
+                    f"current='{_current_zone_id}' target='{_zone_match.id}' "
+                    f"last_vlm_reject={_last_vlm_reject!r} "
+                    f"→ entering LOCAL SEARCH MODE directly (no nav)"
+                )
+                arrived_zone = True
+                _zone_match = None  # disable Phase 0.4 nav for this iteration
+
+            if _zone_match and USE_NAV2 and _nav2_client and not MOCK_ROBOT:
+                _zlabel = _zone_match.label_th or _zone_match.label_en or _zone_match.id
+                logger.info(
+                    f"[NAV] go_to_zone target='{_display}' zone='{_zone_match.id}' "
+                    f"@ ({_zone_match.center_x:.2f}, {_zone_match.center_y:.2f}) "
+                    f"current_zone='{_current_zone_id}' last_vlm_reject={_last_vlm_reject!r}"
+                )
+
+                # ── Preflight: refuse to announce a move we can't actually
+                # dispatch. The old code spoke "กำลังไปห้องนอนครับ" even when
+                # the Nav2 path was broken — that made the system lie to the
+                # user. Now TTS + status only fire AFTER we know the /vora/command
+                # channel is up.
+                _nav_available = False
+                try:
+                    _nav_available = await _nav2_client.connect()
+                except Exception as _pe:
+                    logger.warning(f"[NAV] preflight connect error: {_pe}")
+                    _nav_available = False
+                _zone_nav_ok = False
+                if not _nav_available:
+                    logger.error(
+                        f"[NAV] navigation channel unavailable — NOT announcing "
+                        f"movement to zone '{_zone_match.id}'"
+                    )
+                    await _broadcast_and_cache({
+                        "type": "search_status",
+                        "status": "nav_unavailable",
+                        "target": _display,
+                        "zone": _zone_match.id,
+                        "zone_label": _zlabel,
+                        "reason": "robot_nav_bridge_offline",
+                    })
+                    # do NOT speak, do NOT pretend to move; the explicit-zone
+                    # safety stop below will abort truthfully.
+                else:
+                    # Broadcast intent BEFORE gates so UI shows the zone immediately,
+                    # but TTS fires AFTER gates so robot never lies "กำลังไป" then aborts.
+                    await _broadcast_and_cache({
+                        "type": "search_status",
+                        "status": "navigating_to_zone",
+                        "target": _display,
+                        "zone": _zone_match.id,
+                        "zone_label": _zlabel,
+                        "goal_x": _zone_match.center_x,
+                        "goal_y": _zone_match.center_y,
+                    })
+
+                    # [SAFETY] Block Nav2 launch until AMCL is stable and
+                    # the forward cone is physically clear. Without these
+                    # two gates Nav2 starts against stale pose + wall in
+                    # front, grinds through recovery, and hits the wall.
+                    if not await wait_for_localization_ready(timeout=10.0):
+                        _zone_nav_ok = False
+                        logger.error("[NAV] aborting zone nav — localization not ready")
+                    else:
+                        # Preflight is ADVISORY only — may rotate once to a better
+                        # heading but NEVER blocks navigation. Nav2 owns the path.
+                        try:
+                            await _preflight_forward_clearance(min_clearance=_SAFE_FORWARD_START)
+                        except Exception as _pe:
+                            logger.warning(f"[NAV] preflight advisory error: {_pe}")
+                        logger.info("[NAV] letting Nav2 handle path")
+                        speak_tts_bg(f"กำลังไป{_zlabel}ครับ")
+                        # Bounded attempt loop: first try + exactly ONE replan from
+                        # current pose after stall. No infinite retry storms.
+                        _MAX_ATTEMPTS = 2
+                        for _attempt in range(_MAX_ATTEMPTS):
+                            if _search_cancel:
+                                break
+                            try:
+                                _zone_nav_ok = await _navigate_with_watchdog(
+                                    x=_zone_match.center_x,
+                                    y=_zone_match.center_y,
+                                    timeout=45.0,
+                                )
+                            except Exception as _e_inner:
+                                logger.warning(f"[NAV] go_to_zone error attempt {_attempt+1}: {_e_inner}")
+                                _zone_nav_ok = False
+                            if _zone_nav_ok:
+                                break
+                            logger.warning(
+                                f"[NAV] failed zone {_zone_match.id} "
+                                f"(attempt {_attempt+1}/{_MAX_ATTEMPTS})"
+                            )
+                            if _attempt + 1 < _MAX_ATTEMPTS and not _search_cancel:
+                                # Near-wall escape: rotate 25° to clear costmap
+                                # shadow, nudge forward 10cm, then resend goal ONCE.
+                                logger.info("[NAV] soft-replan triggered — wall escape nudge")
+                                try:
+                                    await _rotate_deg(25.0)
+                                except Exception as _re:
+                                    logger.warning(f"[NAV] recovery rotate error: {_re}")
+                                # Small forward nudge to physically leave the
+                                # inflated zone. Obstacle checker still active.
+                                try:
+                                    await motion.exec_motion(
+                                        {"type": "move", "linear_x": 0.10,
+                                         "angular_z": 0.0, "duration": 1.0},
+                                        obstacle_checker=_lidar_obstacle_check,
+                                    )
+                                except Exception as _me:
+                                    logger.warning(f"[NAV] escape nudge error: {_me}")
+                        if not _zone_nav_ok:
+                            logger.warning(
+                                f"[NAV] final failure after retry — stopping zone nav for {_zone_match.id}"
+                            )
+
+                # Post-nav verification: trust the actual robot pose.
+                # Nav2 sometimes returns ABORTED/TIMEOUT after the robot has
+                # already physically entered the target zone (watchdog races,
+                # final-approach micro-stalls). If pose-vs-zone agrees, treat
+                # the trip as a success and proceed to LOCAL SEARCH MODE so
+                # the search ALWAYS continues automatically after arrival.
+                if not _zone_nav_ok and _nav_available:
+                    try:
+                        _pz = semantic_map.get_zone_at(
+                            _robot_pose.get("x", 0.0),
+                            _robot_pose.get("y", 0.0),
+                        )
+                        _pz_id = _pz.id if _pz else None
+                    except Exception:
+                        _pz_id = None
+                    if _pz_id == _zone_match.id:
+                        logger.warning(
+                            f"[NAV] Nav2 reported failure but robot pose is "
+                            f"inside target zone '{_zone_match.id}' — "
+                            f"treating as arrived (continuing in-room search)"
+                        )
+                        _zone_nav_ok = True
+
+                if _zone_nav_ok:
+                    arrived_zone = True
+                    _current_zone_id = _zone_match.id
+                    # Persist across searches — decision layer of future
+                    # requests reads this to zone-filter memory.
+                    _current_zone = _zone_match.id
+                    logger.info(f"[ZONE] current_zone updated -> {_current_zone_id}")
+                    logger.info(
+                        f"✅ [NAV] room navigation complete → "
+                        f"starting in-room scan at '{_zone_match.id}' "
+                        f"({_zone_match.center_x:.2f}, {_zone_match.center_y:.2f})"
+                    )
+                elif _nav_available:
+                    logger.warning(
+                        f"[NAV] go_to_zone permanently failed for {_zone_match.id}"
+                    )
+
+        # If zone nav just succeeded, proceed to LOCAL SEARCH MODE even if
+        # cancel was set during the transit — the cancel checks inside the
+        # scan loop still honor it between rotations.
+        if _search_cancel and not arrived_zone:
+            await _search_cancelled(_display)
+            return
+
+        # ════════════════════════════════════════════════════════════
         # Phase 0.5: Semantic Zone Navigation
         # Before scanning randomly, check if we know WHERE to look.
         # Uses: zone expected_objects, object memory sightings, co-location.
         # If a strong zone match exists → navigate there → compact 3-dir scan.
         # Falls through to Agent Loop if no match or zone scan fails.
         # ════════════════════════════════════════════════════════════
-        if not _search_cancel:
-            _planner = SearchPlanner(semantic_map, object_memory, spatial_memory)
+        # Phase 0.5 only runs when there is NO explicit zone intent.
+        # If the user named a room, Phase 0.4 is authoritative — we must not
+        # let the heuristic planner pick another zone first.
+        if not _search_cancel and not arrived_zone and not _explicit_zone_id:
+            # [MEM] Source-of-truth = object_memory (disk-authoritative).
+            # spatial_memory is deliberately NOT passed — its stale cross-session
+            # observations were still influencing zone ranking even after the
+            # user deleted object memory via the UI. Planner now ignores it.
+            _planner = SearchPlanner(semantic_map, object_memory, None)
             _plan = _planner.plan(
                 target=normalized_target,
                 robot_x=_robot_pose.get("x", 0.0),
                 robot_y=_robot_pose.get("y", 0.0),
+                explicit_zone_id=_explicit_zone_id,
+                excluded_zone_id=_excluded_zone_id,
+                current_zone_id=_current_zone_id,
             )
 
             if _plan.approach_zone_id:
                 _zone = semantic_map.get_zone(_plan.approach_zone_id)
                 _zone_label = _zone.label_th if _zone else _plan.approach_zone_id
+
+                # Memory-anchor refinement: if we have a recent sighting of
+                # the target inside this zone, hop to that exact spot instead
+                # of the zone center. Makes "I remember where I saw it" real.
+                _mem_anchor = find_memory_anchor(
+                    object_memory, semantic_map,
+                    normalized_target, _plan.approach_zone_id,
+                )
+                if _mem_anchor:
+                    _max, _may, _maage = _mem_anchor
+                    logger.info(
+                        f"🧠 memory_anchor in {_plan.approach_zone_id}: "
+                        f"({_max:.2f},{_may:.2f}) age={_maage:.1f}h "
+                        f"→ overriding zone center"
+                    )
+                    _plan.approach_x = _max
+                    _plan.approach_y = _may
+
                 logger.info(
                     f"🗺️ Semantic: go to {_zone_label} ({_plan.approach_zone_id}) "
                     f"at ({_plan.approach_x:.2f}, {_plan.approach_y:.2f}) "
@@ -901,7 +1287,9 @@ async def visual_search(
                         logger.warning(f"🧭 Nav2 zone nav error: {e}")
 
                 if not _nav_ok and not MOCK_ROBOT:
-                    # cmd_vel fallback: rotate toward zone anchor, drive forward
+                    # cmd_vel fallback: rotate toward zone anchor, drive forward.
+                    # Only drive forward if LiDAR confirms the path is clear —
+                    # otherwise we'd just slam into a wall and rotate-loop.
                     _dx = _plan.approach_x - _robot_pose.get("x", 0.0)
                     _dy = _plan.approach_y - _robot_pose.get("y", 0.0)
                     _target_angle = math.atan2(_dy, _dx)
@@ -911,11 +1299,21 @@ async def visual_search(
                         await _rotate_deg(_turn_deg)
                     _dist = math.sqrt(_dx * _dx + _dy * _dy)
                     if _dist > 0.15:
-                        _move_cmd = {
-                            "type": "move", "linear_x": 0.15, "angular_z": 0.0,
-                            "duration": min(_dist / 0.15, 8.0),
-                        }
-                        await motion.exec_motion(_move_cmd, obstacle_checker=_lidar_obstacle_check)
+                        try:
+                            _fwd_clear = _obstacle_avoidance.get_forward_clearance()
+                        except Exception:
+                            _fwd_clear = float("inf")
+                        if _fwd_clear < 0.35:
+                            logger.warning(
+                                f"[NAV] forward blocked ({_fwd_clear:.2f}m < 0.35m) "
+                                f"— skipping cmd_vel fallback drive"
+                            )
+                        else:
+                            _move_cmd = {
+                                "type": "move", "linear_x": 0.15, "angular_z": 0.0,
+                                "duration": min(_dist / 0.15, 8.0),
+                            }
+                            await motion.exec_motion(_move_cmd, obstacle_checker=_lidar_obstacle_check)
 
                 if _search_cancel:
                     await _search_cancelled(_display)
@@ -937,12 +1335,245 @@ async def visual_search(
 
                 _planner.mark_searched(_plan.approach_zone_id)
                 logger.info(
-                    f"🔍 Zone {_plan.approach_zone_id} scanned — not found, "
-                    f"falling through to agent loop"
+                    f"🔍 Zone {_plan.approach_zone_id} scanned — not found"
                 )
 
-        if _search_cancel:
+                # ── Memory-backed fallback chain ──
+                # Before escalating to the reactive agent loop, try the next
+                # 1-2 zones that have memory or static-prior backing for this
+                # target. Skipped entirely when the user named an explicit
+                # zone (forced priority) — that case has only one valid room.
+                _try_fallbacks = (
+                    _explicit_zone_id is None
+                    and not MOCK_ROBOT
+                    and not _search_cancel
+                )
+                if _try_fallbacks:
+                    _excl = {_excluded_zone_id} if _excluded_zone_id else set()
+                    _fallbacks = _planner.memory_backed_fallback_zones(
+                        _plan, exclude_ids=_excl, max_n=2,
+                    )
+                    if _fallbacks:
+                        logger.info(
+                            f"🔁 memory_fallback candidates for "
+                            f"'{normalized_target}': "
+                            f"{[fz[0] for fz in _fallbacks]}"
+                        )
+                    for _fzid, _fx, _fy in _fallbacks:
+                        if _search_cancel:
+                            await _search_cancelled(_display)
+                            return
+                        # Refine fallback target with its own memory anchor
+                        _fanchor = find_memory_anchor(
+                            object_memory, semantic_map,
+                            normalized_target, _fzid,
+                        )
+                        if _fanchor:
+                            _fx, _fy, _fage = _fanchor
+                            logger.info(
+                                f"🧠 fallback memory_anchor in {_fzid}: "
+                                f"({_fx:.2f},{_fy:.2f}) age={_fage:.1f}h"
+                            )
+                        _fzone = semantic_map.get_zone(_fzid)
+                        _flabel = (_fzone.label_th if _fzone else _fzid)
+                        logger.info(
+                            f"🔁 escalate → memory-backed fallback zone "
+                            f"{_fzid} at ({_fx:.2f},{_fy:.2f})"
+                        )
+                        speak_tts_bg(f"ลองดู{_flabel}อีกที่ครับ")
+                        await manager.broadcast(json.dumps({
+                            "type": "search_status",
+                            "status": "navigating_to_zone",
+                            "target": _display,
+                            "zone": _fzid,
+                            "zone_label": _flabel,
+                            "goal_x": _fx,
+                            "goal_y": _fy,
+                        }))
+                        _fb_ok = False
+                        if USE_NAV2 and _nav2_client:
+                            try:
+                                _fb_ok = await _nav2_client.navigate_to_zone(
+                                    x=_fx, y=_fy, timeout=40.0,
+                                )
+                            except Exception as _e:
+                                logger.warning(f"🔁 fallback nav error: {_e}")
+                        if not _fb_ok:
+                            logger.info(
+                                f"🔁 fallback nav to {_fzid} failed — "
+                                f"trying next candidate"
+                            )
+                            continue
+                        # Local scan at fallback zone
+                        for _fsi, _fsa in enumerate(SearchPlanner.local_scan_angles()):
+                            if _search_cancel:
+                                await _search_cancelled(_display)
+                                return
+                            if _fsi > 0:
+                                await _rotate_deg(_fsa)
+                            if await _do_vlm_and_check(
+                                f"fallback_{_fzid}_{_fsi}", force=True
+                            ):
+                                return
+                        _planner.mark_searched(_fzid)
+                        logger.info(
+                            f"🔍 Fallback zone {_fzid} scanned — not found"
+                        )
+
+                logger.info(
+                    "🔍 memory-backed plan exhausted — "
+                    "falling through to agent loop"
+                )
+
+        if _search_cancel and not arrived_zone:
             await _search_cancelled(_display)
+            return
+
+        # ── Explicit-zone safety stop ──
+        # The user named a specific room and we could not reach it. Do NOT
+        # silently degrade into the global wander loop — that would search
+        # other rooms the user explicitly didn't ask about.
+        if _explicit_zone_id and not arrived_zone:
+            logger.warning(
+                f"[NAV] explicit zone '{_explicit_zone_id}' unreachable — "
+                f"aborting search (no wander)"
+            )
+            speak_tts_bg("ไปไม่ถึงห้องที่ต้องการครับ ขออภัย")
+            await _search_not_found(_display, total_checks)
+            return
+
+        # ════════════════════════════════════════════════════════════
+        # LOCAL SEARCH MODE — only runs if GO-TO-ZONE arrived successfully.
+        # Robot stays at the zone anchor: rotate-in-place + VLM, no forward
+        # moves, no SearchPlanner, no global wandering. Always returns.
+        # ════════════════════════════════════════════════════════════
+        if arrived_zone:
+            logger.info(
+                f"🔒 [SCAN] LOCAL SEARCH MODE: in-room scan starting at "
+                f"'{_current_zone_id}' — {SearchPlanner.local_scan_angles().__len__()} "
+                f"scan directions, no global wander"
+            )
+            speak_tts_bg("ถึงแล้วครับ กำลังมองรอบๆ")
+
+            # Memory-anchor hop inside the arrived zone: if we remember
+            # exactly where this object lives here, walk to that spot before
+            # rotating. Skipped if anchor is < 0.4 m away (already there).
+            _arrived_zid = _zone_match.id if _zone_match else None
+            if _arrived_zid and not MOCK_ROBOT:
+                _local_anchor = find_memory_anchor(
+                    object_memory, semantic_map,
+                    normalized_target, _arrived_zid,
+                )
+                if _local_anchor:
+                    _lax, _lay, _laage = _local_anchor
+                    _ldx = _lax - _robot_pose.get("x", 0.0)
+                    _ldy = _lay - _robot_pose.get("y", 0.0)
+                    _ldist = math.sqrt(_ldx * _ldx + _ldy * _ldy)
+                    if _ldist > 0.4:
+                        logger.info(
+                            f"🧠 local memory_anchor in {_arrived_zid}: "
+                            f"({_lax:.2f},{_lay:.2f}) age={_laage:.1f}h "
+                            f"dist={_ldist:.2f}m → hopping"
+                        )
+                        if USE_NAV2 and _nav2_client:
+                            try:
+                                await _nav2_client.navigate_to_zone(
+                                    x=_lax, y=_lay, timeout=25.0,
+                                )
+                            except Exception as _e:
+                                logger.warning(f"🧠 local anchor nav error: {_e}")
+                    else:
+                        logger.info(
+                            f"🧠 local memory_anchor in {_arrived_zid}: "
+                            f"already within {_ldist:.2f}m — scan in place"
+                        )
+
+            _local_angles = SearchPlanner.local_scan_angles()  # e.g. [0, 120, -120]
+            logger.info(f"🏠 room reached → starting in-room search ({len(_local_angles)} directions)")
+            for _li, _la in enumerate(_local_angles):
+                if _li > 0:
+                    if _search_cancel:
+                        await _search_cancelled(_display)
+                        return
+                    await _rotate_deg(_la)
+                if await _do_vlm_and_check(f"local_zone_{_li}", force=True):
+                    return  # found
+
+            # ── In-room expansion: after 3 rotations failed, take up to 2
+            # short forward steps (each followed by a 3-direction scan) so
+            # we don't give up on the room from a single vantage point.
+            # Stop expanding the moment the robot pose leaves the target
+            # zone — we promised the user we'd stay in their named room.
+            _expand_zone_id = _arrived_zid
+            _MAX_EXPANSION = 2
+            for _ei in range(_MAX_EXPANSION):
+                if _search_cancel:
+                    await _search_cancelled(_display)
+                    return
+                if MOCK_ROBOT:
+                    break
+                # Verify we are still inside the target zone
+                try:
+                    _ez = semantic_map.get_zone_at(
+                        _robot_pose.get("x", 0.0), _robot_pose.get("y", 0.0),
+                    )
+                    _ez_id = _ez.id if _ez else None
+                except Exception:
+                    _ez_id = None
+                if _expand_zone_id and _ez_id != _expand_zone_id:
+                    logger.info(
+                        f"🔒 LOCAL EXPANSION: robot drifted out of "
+                        f"target zone ({_ez_id} != {_expand_zone_id}) — stopping expansion"
+                    )
+                    break
+                # LiDAR clearance gate — never ram a wall
+                try:
+                    _fwd_clear = _obstacle_avoidance.get_forward_clearance()
+                except Exception:
+                    _fwd_clear = 0.0
+                if _fwd_clear < 0.35:
+                    logger.info(
+                        f"🔒 LOCAL EXPANSION step {_ei+1}: clearance "
+                        f"{_fwd_clear:.2f}m blocked — scanning in place before stopping"
+                    )
+                    for _eli, _ela in enumerate(_local_angles):
+                        if _eli > 0:
+                            if _search_cancel:
+                                await _search_cancelled(_display)
+                                return
+                            await _rotate_deg(_ela)
+                        if await _do_vlm_and_check(
+                            f"local_blocked_{_ei}_{_eli}", force=True,
+                        ):
+                            return
+                    break
+                logger.info(
+                    f"🔒 LOCAL EXPANSION step {_ei+1}/{_MAX_EXPANSION}: "
+                    f"nudging forward 0.30m inside '{_expand_zone_id}'"
+                )
+                try:
+                    await motion.exec_motion(
+                        {"type": "move", "linear_x": 0.15, "angular_z": 0.0,
+                         "duration": 2.0},
+                        obstacle_checker=_lidar_obstacle_check,
+                    )
+                except Exception as _ee:
+                    logger.warning(f"🔒 LOCAL EXPANSION nudge error: {_ee}")
+                    break
+                await asyncio.sleep(0.4)
+                for _eli, _ela in enumerate(_local_angles):
+                    if _eli > 0:
+                        if _search_cancel:
+                            await _search_cancelled(_display)
+                            return
+                        await _rotate_deg(_ela)
+                    if await _do_vlm_and_check(
+                        f"local_expand_{_ei}_{_eli}", force=True,
+                    ):
+                        return
+
+            logger.info("🔒 LOCAL SEARCH MODE: target not found in room — ending search")
+            await _search_not_found(_display, total_checks)
             return
 
         # ════════════════════════════════════════════════════════════
@@ -1169,7 +1800,7 @@ async def visual_search(
                 if wall_empty_count >= 3:
                     wall_empty_count = 0
                 
-                # ══════ Try Nav2 first, fall back to legacy cmd_vel ══════
+                # ══════ Try Nav2 first ══════
                 _nav2_moved = False
                 if USE_NAV2 and _nav2_client and not MOCK_ROBOT:
                     _nav2_moved = await _nav2_forward(
@@ -1177,10 +1808,19 @@ async def visual_search(
                         distance_m=move_speed * move_duration,  # ~0.40m
                     )
                     if not _nav2_moved:
-                        logger.warning("🧭 Nav2 forward failed — falling back to legacy cmd_vel")
-                
+                        # DO NOT fall back to legacy cmd_vel when USE_NAV2=True.
+                        # Legacy cmd_vel after Nav2 ERROR causes a dead loop:
+                        #   Nav2 fail → cmd_vel → LiDAR interrupt at step 0 → no movement.
+                        # Let the agent loop pick a different action (turn, scan, etc.).
+                        logger.warning(
+                            "🧭 Nav2 forward failed — skipping legacy cmd_vel "
+                            "(USE_NAV2=True). Agent loop will choose next action."
+                        )
+
                 # ══════ Legacy MODE: direct cmd_vel + LiDAR interrupt ══════
-                if not _nav2_moved:
+                # Only runs when Nav2 is disabled (USE_NAV2=False) or in MOCK mode.
+                # Never runs as a fallback after Nav2 failure — that creates broken loops.
+                if not _nav2_moved and not (USE_NAV2 and not MOCK_ROBOT):
                     # Check clearance AFTER rotation using non-dead-zone rays (±16°~60°)
                     # can_robot_fit(0.0) is broken: sector 0 is in the dead zone, so it
                     # returns side clearance instead of front clearance.
@@ -1216,10 +1856,9 @@ async def visual_search(
                         obs = await _obstacle_avoidance.check_and_avoid()
                         if obs and obs.get("obstacle_detected"):
                             logger.warning(f"🚧 Obstacle at {obs.get('distance', 0):.2f}m!")
-                            speak_tts_bg("เจอสิ่งกีดขวาง กำลังหลบครับ")
-                            await motion.exec_motion(
-                                {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.0}
-                            )
+                            speak_tts_bg("เจอสิ่งกีดขวางครับ")
+                            # No blind reverse — rear unknown. Stop + fall through to strategy.
+                            await _safe_reverse(speed=0.10, duration=1.0)
                             await _obstacle_avoidance.execute_avoidance(obs.get("strategy", "stop"))
                             forward_move_count -= 1
                             continue
@@ -1270,8 +1909,11 @@ async def visual_search(
                         )
                         if not completed:
                             logger.warning("🛑 Forward interrupted by LiDAR!")
-                            speak_tts_bg("ตรวจพบสิ่งกีดขวาง ถอยหลังครับ")
-                            await motion.exec_motion({"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.0})
+                            # Rear may be unknown — only reverse if side-rear band is clear
+                            if await _safe_reverse(speed=0.10, duration=1.0):
+                                speak_tts_bg("ตรวจพบสิ่งกีดขวาง ถอยหลังครับ")
+                            else:
+                                speak_tts_bg("ตรวจพบสิ่งกีดขวาง หยุดรอครับ")
                         
                         # Stuck detection: if odom didn't change after forward command,
                         # robot is stuck (wheels spinning but not moving)
@@ -1287,12 +1929,11 @@ async def visual_search(
                         )
                         if completed and _moved_dist < _expected_dist and _expected_dist > 0.05:
                             logger.warning(
-                                f"🚨 STUCK DETECTED: moved {_moved_dist:.3f}m but expected ≥{_expected_dist:.3f}m. "
-                                f"Auto-reversing..."
+                                f"🚨 STUCK DETECTED: moved {_moved_dist:.3f}m but expected ≥{_expected_dist:.3f}m."
                             )
-                            await motion.exec_motion(
-                                {"type": "move", "linear_x": -0.10, "angular_z": 0.0, "duration": 1.5}
-                            )
+                            # Only reverse if side-rear band is explicitly clear.
+                            # Otherwise escape by rotating to an open direction below.
+                            await _safe_reverse(speed=0.10, duration=1.5)
                             await asyncio.sleep(0.3)
                             forward_move_count -= 1  # don't count stuck move
                             consecutive_blocked += 1
@@ -1362,6 +2003,7 @@ async def visual_search(
         _search_active = False
         _search_cancel = False
         _search_cancel_event.clear()
+        _current_search_target = ""
         motion._cancel_checker = None
 
 
@@ -2420,7 +3062,7 @@ def _fallback_keyword_check(target: str, description: str) -> bool:
 
 async def _search_found(target: str, location: str, description: str):
     """Handle object found — announce, APPROACH the object, then confirm arrival."""
-    global _search_active
+    global _search_active, _current_search_target
 
     loc_thai = _location_to_thai(location)
     loc_text = f" อยู่ทาง{loc_thai}" if loc_thai else ""
@@ -2596,9 +3238,10 @@ async def _search_found(target: str, location: str, description: str):
     if not MOCK_ROBOT:
         stop_cmd = {"type": "move", "linear_x": 0.0, "angular_z": 0.0, "duration": 0.1}
         await motion.exec_motion(stop_cmd)
-    
+
     _search_active = False
-    
+    _current_search_target = ""
+
     # Final announce
     final_loc_thai = _location_to_thai(current_location)
     final_announce = f"ถึงแล้วครับ {target} อยู่ตรงนี้"
@@ -2621,20 +3264,37 @@ async def _search_found(target: str, location: str, description: str):
     except Exception as e:
         logger.warning(f"⚠️ Capture failed: {e}")
     
-    # 📚 Remember observation in memory (observer pose, not object pose)
+    # 📚 Remember observation in memory (observer pose, not object pose).
+    # Suppressed when localization is untrustworthy: no source, post-relocalize
+    # window, or pose still at default (0,0).
     normalized = normalize_search_target(target)
-    object_memory.remember(
-        object_name=normalized,
-        display_name=target,
-        location=current_location,
-        location_description=final_loc_thai,
-        confidence=0.9,
-        image_url=capture_url,
-        observer_x=_robot_pose.get("x", 0.0),
-        observer_y=_robot_pose.get("y", 0.0),
-        observer_theta=_robot_pose.get("theta", 0.0),
-        localization_source=_odom_source,
+    _ox = _robot_pose.get("x", 0.0)
+    _oy = _robot_pose.get("y", 0.0)
+    _oth = _robot_pose.get("theta", 0.0)
+    _trust_ok = (
+        _odom_source not in ("", "none")
+        and time.time() >= _memory_block_until
+        and not (abs(_ox) < 0.01 and abs(_oy) < 0.01)
     )
+    if _trust_ok:
+        object_memory.remember(
+            object_name=normalized,
+            display_name=target,
+            location=current_location,
+            location_description=final_loc_thai,
+            confidence=0.9,
+            image_url=capture_url,
+            observer_x=_ox,
+            observer_y=_oy,
+            observer_theta=_oth,
+            localization_source=_odom_source,
+        )
+    else:
+        logger.warning(
+            f"📕 SKIP remember('{normalized}'): pose untrusted "
+            f"src={_odom_source!r} pose=({_ox:.2f},{_oy:.2f},{_oth:.2f}) "
+            f"block_left={max(0.0, _memory_block_until - time.time()):.1f}s"
+        )
     
     # NOTE: robot_x/robot_y kept for webapp backward compat — these are OBSERVER pose, not object pose
     _obs_x = round(_robot_pose.get("x", 0.0), 3)
@@ -2690,8 +3350,9 @@ def _location_to_thai(location: str) -> str:
 
 async def _search_not_found(target: str, total_checks: int):
     """Handle object not found after full search"""
-    global _search_active
+    global _search_active, _current_search_target
     _search_active = False
+    _current_search_target = ""
     
     # Stop the robot
     if not MOCK_ROBOT:
@@ -2719,10 +3380,11 @@ async def _search_not_found(target: str, total_checks: int):
 
 async def _search_cancelled(target: str):
     """Handle search cancellation"""
-    global _search_active, _search_cancel
+    global _search_active, _search_cancel, _current_search_target
     _search_active = False
     _search_cancel = False
     _search_cancel_event.clear()
+    _current_search_target = ""
     
     # Stop the robot
     if not MOCK_ROBOT:
@@ -2829,17 +3491,32 @@ async def visual_search_multi(targets: List[str]):
 
                     # Remember observation in memory (observer pose, not object pose)
                     normalized = normalize_search_target(t)
-                    object_memory.remember(
-                        object_name=normalized,
-                        display_name=t,
-                        location=location,
-                        location_description="",
-                        confidence=confidence,
-                        observer_x=_robot_pose.get("x", 0.0),
-                        observer_y=_robot_pose.get("y", 0.0),
-                        observer_theta=_robot_pose.get("theta", 0.0),
-                        localization_source=_odom_source,
+                    _ox2 = _robot_pose.get("x", 0.0)
+                    _oy2 = _robot_pose.get("y", 0.0)
+                    _oth2 = _robot_pose.get("theta", 0.0)
+                    _trust_ok2 = (
+                        _odom_source not in ("", "none")
+                        and time.time() >= _memory_block_until
+                        and not (abs(_ox2) < 0.01 and abs(_oy2) < 0.01)
                     )
+                    if _trust_ok2:
+                        object_memory.remember(
+                            object_name=normalized,
+                            display_name=t,
+                            location=location,
+                            location_description="",
+                            confidence=confidence,
+                            observer_x=_ox2,
+                            observer_y=_oy2,
+                            observer_theta=_oth2,
+                            localization_source=_odom_source,
+                        )
+                    else:
+                        logger.warning(
+                            f"📕 SKIP remember('{normalized}'): pose untrusted "
+                            f"src={_odom_source!r} pose=({_ox2:.2f},{_oy2:.2f},{_oth2:.2f}) "
+                            f"block_left={max(0.0, _memory_block_until - time.time()):.1f}s"
+                        )
 
                     # NOTE: robot_x/robot_y kept for webapp compat — OBSERVER pose, not object pose
                     _obs_x2 = round(_robot_pose.get("x", 0.0), 3)
@@ -2895,6 +3572,7 @@ async def visual_search_multi(targets: List[str]):
         _search_active = False
         _search_cancel = False
         _search_cancel_event.clear()
+        _current_search_target = ""
         motion._cancel_checker = None
 
 
@@ -2981,7 +3659,35 @@ async def execute_server_command(cmd: str, params: dict):
             rx = float(params.get("x", 0.0))
             ry = float(params.get("y", 0.0))
             rtheta = float(params.get("theta", 0.0))
-            logger.info(f"📍 Relocalize: x={rx:.2f} y={ry:.2f} θ={math.degrees(rtheta):.1f}°")
+            logger.info(
+                f"📍 Relocalize REQ: x={rx:.3f} y={ry:.3f} "
+                f"theta={rtheta:.3f}rad ({math.degrees(rtheta):.1f}°) "
+                f"search_active={_search_active}"
+            )
+
+            # ── REFUSE relocalize during active search/navigation ──
+            # Mid-task re-anchoring corrupts AMCL→costmap→memory. Caller must
+            # cancel the active task explicitly first.
+            if _search_active and not _search_cancel:
+                logger.warning(
+                    f"⚠️ Relocalize REJECTED: search/nav is active "
+                    f"(target={_current_search_target!r}) — cancel the task first"
+                )
+                try:
+                    await _broadcast_and_cache({
+                        "type": "relocalize_status",
+                        "status": "rejected",
+                        "reason": "search_active",
+                        "target": _current_search_target,
+                    })
+                except Exception:
+                    pass
+                return
+
+            # Block memory writes for a short window after relocalize so
+            # observer pose has a chance to settle (AMCL convergence).
+            global _memory_block_until
+            _memory_block_until = time.time() + 5.0
 
             if not MOCK_ROBOT:
                 try:
@@ -3044,16 +3750,386 @@ _nav2_client = Nav2Client(rosbridge_url=ROSBRIDGE) if USE_NAV2 else None
 
 
 def _lidar_obstacle_check() -> bool:
-    """Synchronous check for LiDAR obstacle — passed as callback to exec_motion.
-    Uses get_forward_clearance() to skip the LiDAR dead zone (±0-15°) and avoid
-    false positives that would block forward motion before it starts."""
-    return _obstacle_avoidance.get_forward_clearance() < 0.30
+    """Emergency-only forward stop for manual cmd_vel motion.
+
+    Uses a narrow ±15° true frontal cone at 0.18m — triggers ONLY for
+    genuine imminent collision. The wide ±16°–60° cone (get_forward_clearance)
+    at 0.45m threshold is NOT used here: it picks up corridor side walls at
+    0.30–0.32m slant range and causes false 'LIDAR INTERRUPT at step 0'.
+
+    WARN range (0.18–0.35m): logged but does NOT interrupt motion.
+    STOP (<0.18m): true frontal collision imminent — interrupt.
+    """
+    hard_front = _obstacle_avoidance._get_range_at(0, tol_deg=15)
+    if hard_front is not None and hard_front < 0.18:
+        logger.warning(f"[SAFETY] STOP: hard_front={hard_front:.2f}m < 0.18m — collision imminent")
+        return True
+    # Advisory warn — log only, do not stop
+    wide_front = _obstacle_avoidance.get_forward_clearance()
+    if wide_front < 0.35:
+        logger.info(f"[OBS] WARN: wide_front={wide_front:.2f}m — close but continuing")
+    return False
+
+
+# ── AMCL localization readiness gate ──────────────────────────────────
+# Tracks the last few AMCL samples so we can block navigation starts
+# until the pose estimate stops jumping. Writes come from
+# ``_amcl_pose_callback``; reads come from ``wait_for_localization_ready``.
+_amcl_recent_poses: List[tuple] = []  # (x, y) from last few messages
+_AMCL_HISTORY_MAX = 5
+_AMCL_READY_MIN_SAMPLES = 3
+_AMCL_READY_VAR_M2 = 0.09  # 30 cm stddev budget (loosened from 0.04 — low-motion AMCL still valid)
+
+
+async def wait_for_localization_ready(timeout: float = 10.0) -> bool:
+    """Block until AMCL has published at least 3 recent samples with variance
+    below threshold.
+
+    FAIL-OPEN: if AMCL has *any* data when timeout expires, we allow navigation
+    rather than hard-blocking. Absence of AMCL entirely → returns False."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        hist = list(_amcl_recent_poses)
+        if len(hist) >= _AMCL_READY_MIN_SAMPLES:
+            mx = sum(p[0] for p in hist) / len(hist)
+            my = sum(p[1] for p in hist) / len(hist)
+            var = sum((p[0] - mx) ** 2 + (p[1] - my) ** 2 for p in hist) / len(hist)
+            if var < _AMCL_READY_VAR_M2:
+                logger.info(
+                    f"[NAV] localization ready (samples={len(hist)}, var={var:.4f})"
+                )
+                return True
+        await asyncio.sleep(0.2)
+    # Timeout — fail-open if AMCL has any data (trust Nav2 to handle it)
+    hist = list(_amcl_recent_poses)
+    if hist:
+        mx = sum(p[0] for p in hist) / len(hist)
+        my = sum(p[1] for p in hist) / len(hist)
+        var = sum((p[0] - mx) ** 2 + (p[1] - my) ** 2 for p in hist) / len(hist)
+        logger.warning(
+            f"[NAV] localization timeout but AMCL present — "
+            f"samples={len(hist)} var={var:.4f} → ALLOW (trusting Nav2)"
+        )
+        return True
+    logger.warning(
+        f"[NAV] blocked: localization not ready — no AMCL data (timeout={timeout:.0f}s)"
+    )
+    return False
+
+
+async def _rotate_deg(degrees: float = 90.0) -> None:
+    """Module-level rotate-by-degrees used from nav preflight + watchdogs.
+
+    Simple cmd_vel blocking rotate — 0.5 rad/s, duration = |deg|/90 * 3.0s.
+    No rear_obstacle_checker is passed: rotation does not translate the robot,
+    and the rear check was firing at step 0 on every in-place turn near a
+    wall. Tight-space guard is owned by caller via ``_rotation_possible()``."""
+    if MOCK_ROBOT:
+        logger.info(f"🤖 [MOCK] Would rotate {degrees}°")
+        await asyncio.sleep(0.3)
+        return
+    if abs(degrees) < 0.5:
+        return
+    duration = (abs(degrees) / 90.0) * 3.0
+    direction = 0.5 if degrees > 0 else -0.5
+    phys = "LEFT(CCW)" if degrees > 0 else "RIGHT(CW)"
+    logger.info(f"🔄 [NAV] rotate {degrees:+.0f}° → {phys} (dur={duration:.2f}s)")
+    try:
+        await motion.exec_motion(
+            {"type": "move", "linear_x": 0.0, "angular_z": direction,
+             "duration": duration},
+        )
+    except Exception as e:
+        logger.warning(f"[NAV] rotate_deg exec failed: {e}")
+    await asyncio.sleep(0.3)
+
+
+# Robot half-diagonal ≈ sqrt(0.13² + 0.105²) ≈ 0.167m. We need at least this
+# much on both sides to rotate in place without clipping a wall.
+_ROTATION_MIN_SIDE_CLEAR = 0.18
+
+
+def _rotation_possible() -> bool:
+    """Return False if both sides are too tight for a safe in-place rotation.
+    Used before every recovery-rotate so we fail fast instead of grinding the
+    body against a wall during a turn attempt."""
+    try:
+        left, right = _obstacle_avoidance.get_side_clearance()
+    except Exception:
+        return True  # no data — don't block
+    if not math.isfinite(left):
+        left = 10.0
+    if not math.isfinite(right):
+        right = 10.0
+    if left < _ROTATION_MIN_SIDE_CLEAR and right < _ROTATION_MIN_SIDE_CLEAR:
+        logger.warning(
+            f"[NAV] turn impossible in tight space: "
+            f"left={left:.2f} right={right:.2f} < {_ROTATION_MIN_SIDE_CLEAR}"
+        )
+        return False
+    return True
+
+
+async def _safe_reverse(speed: float = 0.10, duration: float = 1.0) -> bool:
+    """BANNED unless the side-rear band is lit AND shows clearance.
+
+    LiDAR has a ~130° rear blind spot so the rear is *never* fully known.
+    We allow a short, slow reverse only when the side-rear band (±90–110°)
+    has valid data and reports no obstacle within 0.25 m. Everything else
+    → reverse is disabled; we stop and return False so the caller can
+    fail cleanly instead of backing into a wall it cannot see."""
+    if MOCK_ROBOT:
+        logger.info(f"🤖 [MOCK] Would reverse speed={speed} dur={duration}")
+        return True
+    if not _obstacle_avoidance.has_rear_scan_data():
+        logger.warning("[SAFETY] reverse disabled: rear unknown")
+        return False
+    checker = _obstacle_avoidance.get_rear_obstacle_checker(threshold_m=0.25)
+    if checker():
+        logger.warning("[SAFETY] reverse disabled: rear obstacle within 0.25m")
+        return False
+    logger.info(f"[SAFETY] reverse allowed: rear clear, speed={speed:.2f} dur={duration:.1f}s")
+    try:
+        await motion.exec_motion(
+            {"type": "move", "linear_x": -abs(speed),
+             "angular_z": 0.0, "duration": duration},
+            rear_obstacle_checker=checker,
+        )
+    except Exception as e:
+        logger.warning(f"[SAFETY] safe reverse exec failed: {e}")
+        return False
+    return True
+
+
+async def _preflight_forward_clearance(min_clearance: float | None = None) -> bool:
+    """READ-ONLY preflight: log LiDAR clearances, then yield to Nav2 immediately.
+    No rotation, no movement. Nav2 owns all path planning from start to goal."""
+    if min_clearance is None:
+        min_clearance = _SAFE_FORWARD_START
+    try:
+        fwd0 = _obstacle_avoidance.get_forward_clearance()
+    except Exception:
+        fwd0 = 10.0
+
+    _CAP = 5.0
+    try:
+        raw_left = _obstacle_avoidance._directional_clearance(45.0)[0]
+        fwd_left = min(_CAP, raw_left) if math.isfinite(raw_left) else _CAP
+    except Exception:
+        fwd_left = 0.0
+    try:
+        raw_right = _obstacle_avoidance._directional_clearance(-45.0)[0]
+        fwd_right = min(_CAP, raw_right) if math.isfinite(raw_right) else _CAP
+    except Exception:
+        fwd_right = 0.0
+
+    logger.info(
+        f"[SAFETY] preflight (read-only): fwd={fwd0:.2f} L+45={fwd_left:.2f} "
+        f"R-45={fwd_right:.2f} threshold={min_clearance:.2f} — Nav2 handles path"
+    )
+    return True
+
+
+async def _smooth_stop() -> None:
+    """Ramp cmd_vel down before a hard stop so the robot doesn't slam.
+    0.05 → 0 → publish stop. Non-fatal on any publish error."""
+    try:
+        await motion.exec_motion(
+            {"type": "move", "linear_x": 0.05, "angular_z": 0.0, "duration": 0.2},
+            obstacle_checker=None,
+        )
+    except Exception:
+        pass
+    try:
+        await motion.exec_motion(
+            {"type": "move", "linear_x": 0.0, "angular_z": 0.0, "duration": 0.1},
+            obstacle_checker=None,
+        )
+    except Exception:
+        pass
+    try:
+        motion.publish_stop() if hasattr(motion, "publish_stop") else None
+    except Exception:
+        pass
+
+
+# ── Collision / Nav2 danger watchdog ─────────────────────────────────
+# Runs alongside active Nav2 goals. Two triggers:
+#   1. forward clearance drops below DANGER_FORWARD → cancel Nav2 now
+#   2. robot barely moved (<0.02m) for STALL_WINDOW seconds while a goal
+#      is active → log [COLLISION], cancel Nav2, recover with a 45° rotate
+_SAFE_FORWARD_START = 0.45   # preflight: advisory only — never blocks
+_SAFE_FORWARD_DANGER = 0.15  # runtime: emergency stop only (imminent collision)
+_STALL_WINDOW = 12.0         # no-progress window — give Nav2 time to plan + rotate
+_STALL_MIN_DELTA = 0.05      # minimum movement to reset stall clock (meters)
+_STALL_GRACE = 40.0          # seconds before arming stall detection.
+                             # Raised from 6→40: Jetson Nano DDS discovery + Nav2 costmap
+                             # init takes 30-40s before robot-side accepts the goal.
+                             # Firing the stall watchdog during that window was cancelling
+                             # goals that would have succeeded.
+
+
+async def _nav_safety_watchdog(cancel_event: asyncio.Event) -> Dict[str, Any]:
+    """Runtime safety while Nav2 goal is active. Two triggers only:
+
+    (A) HARD COLLISION: forward < SAFE_FORWARD_DANGER (0.15 m) → cancel now.
+    (B) NO-PROGRESS STALL: BOTH amcl delta AND odom delta < STALL_MIN_DELTA for
+        STALL_WINDOW seconds, armed only after grace period. Requiring both sources
+        to agree prevents false stalls when /odom x,y is stuck at 0 (MyAGV bug)
+        but AMCL is actively tracking real movement.
+
+    Everything else: trust Nav2. Gateway emergency stop only."""
+    watchdog_started = time.monotonic()
+    stall_start = time.monotonic()
+    # Snapshot both pose sources independently at watchdog start
+    amcl_start = _amcl_watchdog_xy
+    odom_start = _odom_watchdog_xy
+    _acceptance_grace_logged = False  # one-time log when grace expires without acceptance
+    while not cancel_event.is_set():
+        # (A) Hard collision guard — imminent contact only
+        try:
+            fwd = _obstacle_avoidance.get_forward_clearance()
+        except Exception:
+            fwd = 999.0
+        if fwd < _SAFE_FORWARD_DANGER:
+            logger.warning(
+                f"[SAFETY] emergency stop only fwd={fwd:.2f} < {_SAFE_FORWARD_DANGER} — cancel Nav2"
+            )
+            try:
+                if _nav2_client is not None:
+                    await _nav2_client.cancel_navigation()
+            except Exception:
+                pass
+            await _smooth_stop()
+            return {"reason": "danger_forward", "forward": fwd}
+
+        # (B) No-progress stall — BOTH sources must show no movement
+        amcl_cur = _amcl_watchdog_xy
+        odom_cur = _odom_watchdog_xy
+        amcl_delta = math.hypot(amcl_cur[0] - amcl_start[0], amcl_cur[1] - amcl_start[1])
+        odom_delta = math.hypot(odom_cur[0] - odom_start[0], odom_cur[1] - odom_start[1])
+
+        # ── Acceptance guard ─────────────────────────────────────────
+        # Robot-side Nav2 acceptance can take 30-40s (Jetson Nano DDS + costmap init).
+        # While the goal is still pending ("SENT" / no acknowledgement yet), the robot
+        # hasn't started moving — treating zero motion as a stall is wrong.
+        # Suppress stall until we see ACCEPTED/RUNNING OR the grace window expires.
+        elapsed_total = time.monotonic() - watchdog_started
+        try:
+            _nav_status = (_nav2_client.nav_status_name or "").upper() if _nav2_client else ""
+        except Exception:
+            _nav_status = ""
+        _nav_pending = _nav_status in ("", "SENT", "IDLE")
+
+        if _nav_pending and elapsed_total < _STALL_GRACE:
+            logger.info(
+                "[NAV] waiting for robot-side Nav2 acceptance "
+                "(status=%s elapsed=%.1fs grace=%.0fs) — stall watchdog suppressed",
+                _nav_status or "none", elapsed_total, _STALL_GRACE,
+            )
+            # Keep resetting stall clock so the full STALL_WINDOW is available
+            # after acceptance, not just whatever's left from a stale clock.
+            stall_start = time.monotonic()
+            amcl_start = amcl_cur
+            odom_start = odom_cur
+            await asyncio.sleep(0.2)
+            continue
+
+        if elapsed_total >= _STALL_GRACE and _nav_pending and not _acceptance_grace_logged:
+            logger.warning(
+                "[NAV] acceptance grace expired (%.0fs) — arming stall detection "
+                "(status=%s; no ACCEPTED/RUNNING signal received from robot-side)",
+                elapsed_total, _nav_status or "none",
+            )
+            _acceptance_grace_logged = True
+        # ─────────────────────────────────────────────────────────────
+
+        pose_reliable = _amcl_pose_active or _odom_xy_moving
+        armed = (time.monotonic() - watchdog_started) >= _STALL_GRACE
+
+        if armed and pose_reliable:
+            # Movement in EITHER source resets the stall clock.
+            # This prevents false stalls when odom is stuck at 0 but AMCL is moving.
+            if amcl_delta >= _STALL_MIN_DELTA or odom_delta >= _STALL_MIN_DELTA:
+                amcl_start = amcl_cur
+                odom_start = odom_cur
+                stall_start = time.monotonic()
+            else:
+                elapsed = time.monotonic() - stall_start
+                logger.debug(
+                    "[NAV] movement check: amcl=%.3fm, odom=%.3fm, stall_elapsed=%.1fs",
+                    amcl_delta, odom_delta, elapsed,
+                )
+                if elapsed >= _STALL_WINDOW:
+                    logger.error(
+                        "[SAFETY] no-progress stall — amcl=%.3fm odom=%.3fm both < %.2fm for %.1fs",
+                        amcl_delta, odom_delta, _STALL_MIN_DELTA, _STALL_WINDOW,
+                    )
+                    try:
+                        if _nav2_client is not None:
+                            await _nav2_client.cancel_navigation()
+                    except Exception:
+                        pass
+                    await _smooth_stop()
+                    return {"reason": "collision_stall"}
+        else:
+            # Pose not yet reliable → reset stall clock; don't fire false positive
+            stall_start = time.monotonic()
+            amcl_start = amcl_cur
+            odom_start = odom_cur
+
+        await asyncio.sleep(0.2)
+    return {}
+
+
+async def _navigate_with_watchdog(x: float, y: float, timeout: float = 45.0) -> bool:
+    """Run navigate_to_zone alongside the safety watchdog.
+
+    Nav success → True.
+    Watchdog fires (danger or stall) → cancels nav task, returns False immediately
+    so the caller's retry loop can take corrective action without hanging."""
+    if _nav2_client is None:
+        return False
+    cancel_event = asyncio.Event()
+    nav_task = asyncio.create_task(
+        _nav2_client.navigate_to_zone(x=x, y=y, timeout=timeout)
+    )
+    watch_task = asyncio.create_task(_nav_safety_watchdog(cancel_event))
+    done, _pending = await asyncio.wait(
+        {nav_task, watch_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if nav_task in done:
+        # Nav finished first — stop watchdog cleanly
+        cancel_event.set()
+        watch_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(watch_task), timeout=0.5)
+        except Exception:
+            pass
+        try:
+            return bool(nav_task.result())
+        except Exception:
+            return False
+    # Watchdog fired first — cancel nav task, no hang
+    cancel_event.set()
+    nav_task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(nav_task), timeout=2.0)
+    except Exception:
+        pass
+    return False
 
 
 # ── Camera Frame Push (Gateway → Server) ─────────────────────────────
 
 # ── Robot Pose Tracking (from /odom via ROSBridge) ────────────────────
 _robot_pose = {"x": 0.0, "y": 0.0, "theta": 0.0}
+
+# ── Current semantic zone (persists across searches) ──
+# Updated only after a CONFIRMED navigate_to_zone arrival. The decision
+# layer reads this to decide whether memory is trustworthy for the current
+# request (memory from other zones is ignored when target_zone differs).
+_current_zone: Optional[str] = None
 _odom_subscribed = False
 _odom_msg_count = 0
 _odom_source = "none"  # "amcl" | "odom_hybrid" | "dead_reckoning" | "none"
@@ -3068,11 +4144,19 @@ _amcl_pose_active = False
 _amcl_pose_count = 0
 _amcl_suppress_until = 0.0  # timestamp — AMCL callback ignores updates until this time
 
+# Separate watchdog tracking — AMCL and odom maintained independently so the
+# stall detector can require BOTH to show no movement before firing.
+# odom x,y is always tracked raw (even when AMCL is active) so the watchdog
+# has two independent signals and won't false-fire when only one is stuck.
+_amcl_watchdog_xy: tuple = (0.0, 0.0)   # last AMCL map-frame x,y
+_odom_watchdog_xy: tuple = (0.0, 0.0)   # last raw /odom x,y
+
 def _odom_callback(msg):
     """Extract theta from /odom. MyAGV odom provides reliable yaw but
     x,y is often stuck near 0 due to Mecanum wheel encoder limitations.
     We use odom ONLY for theta; dead reckoning handles x,y."""
     global _odom_msg_count, _odom_source, _odom_first_pos, _odom_xy_drift, _odom_xy_moving
+    global _odom_watchdog_xy
     try:
         pos = msg["pose"]["pose"]["position"]
         ori = msg["pose"]["pose"]["orientation"]
@@ -3088,6 +4172,8 @@ def _odom_callback(msg):
 
         # Track whether /odom x,y actually changes
         ox, oy = pos["x"], pos["y"]
+        # Always update raw odom watchdog tracking (independent of AMCL state)
+        _odom_watchdog_xy = (ox, oy)
         if _odom_first_pos is None:
             _odom_first_pos = (ox, oy)
         else:
@@ -3116,7 +4202,7 @@ def _odom_callback(msg):
 def _amcl_pose_callback(msg):
     """Extract position from /amcl_pose (map frame). Takes priority over /odom
     because AMCL provides the corrected map-frame position for display on SLAM map."""
-    global _amcl_pose_active, _amcl_pose_count, _odom_source
+    global _amcl_pose_active, _amcl_pose_count, _odom_source, _amcl_watchdog_xy
     try:
         # Suppress AMCL updates briefly after manual relocalize to avoid snap-back
         if time.time() < _amcl_suppress_until:
@@ -3134,7 +4220,13 @@ def _amcl_pose_callback(msg):
         _robot_pose["theta"] = theta
         _odom_source = "amcl"
         _amcl_pose_active = True
+        _amcl_watchdog_xy = (pos["x"], pos["y"])  # independent watchdog tracking
         _amcl_pose_count += 1
+
+        # Track last N samples for wait_for_localization_ready() variance check.
+        _amcl_recent_poses.append((pos["x"], pos["y"]))
+        if len(_amcl_recent_poses) > _AMCL_HISTORY_MAX:
+            _amcl_recent_poses.pop(0)
 
         if _amcl_pose_count <= 3 or _amcl_pose_count % 200 == 0:
             logger.info(
@@ -3262,19 +4354,94 @@ async def _push_objects_to_server():
             await _http.post(push_url, json=markers, timeout=3.0)
         except Exception:
             pass
-        await asyncio.sleep(5.0)
-
-async def _push_annotations_to_server():
-    """Background task: push semantic map annotations to Server every ~10s."""
-    push_url = f"{SERVER_BASE}/map/annotations/push"
-    await asyncio.sleep(10)
-    while True:
+        # Authoritative full-memory push (Server is source of truth for
+        # planning). Keeping the marker push above for webapp UI only.
         try:
-            data = semantic_map.to_dict()
-            await _http.post(push_url, json=data, timeout=3.0)
+            full_payload = {
+                name: [
+                    {
+                        "object_name": loc.object_name,
+                        "display_name": loc.display_name,
+                        "location": loc.location,
+                        "location_description": loc.location_description,
+                        "timestamp": loc.timestamp,
+                        "confidence": loc.confidence,
+                        "image_url": loc.image_url,
+                        "observer_x": loc.observer_x,
+                        "observer_y": loc.observer_y,
+                        "observer_theta": loc.observer_theta,
+                        "estimated_x": loc.estimated_x,
+                        "estimated_y": loc.estimated_y,
+                        "bearing_deg": loc.bearing_deg,
+                        "section": loc.section,
+                        "localization_source": loc.localization_source,
+                        "last_verified_at": loc.last_verified_at,
+                    }
+                    for loc in object_memory.get_history(name, limit=10)
+                ]
+                for name in object_memory.get_all_objects()
+            }
+            await _http.post(
+                f"{SERVER_BASE}/map/objects/full",
+                json=full_payload, timeout=3.0,
+            )
         except Exception:
             pass
-        await asyncio.sleep(10.0)
+        await asyncio.sleep(5.0)
+
+async def _sync_semantic_map_from_server():
+    """Background task: fetch semantic map from Server (source of truth) every ~30s.
+    Gateway uses this data READ-ONLY for search planning.
+    The Server owns all CRUD; Gateway just keeps a local cache."""
+    fetch_url = f"{SERVER_BASE}/map/annotations"
+    await asyncio.sleep(5)
+    while True:
+        try:
+            resp = await _http.get(fetch_url, timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Update local SemanticMap from server data
+                new_zone_ids = set()
+                for zd in data.get("zones", []):
+                    z = Zone(
+                        id=zd["id"],
+                        label_th=zd.get("label_th", ""),
+                        label_en=zd.get("label_en", ""),
+                        center_x=float(zd.get("center_x", 0)),
+                        center_y=float(zd.get("center_y", 0)),
+                        radius=float(zd.get("radius", 1.0)),
+                        expected_objects=zd.get("expected_objects", []),
+                        notes=zd.get("notes", ""),
+                        color=zd.get("color", "#3b82f6"),
+                        source=zd.get("source", "seed"),
+                    )
+                    semantic_map._zones[z.id] = z
+                    new_zone_ids.add(z.id)
+                # Remove zones that no longer exist on Server
+                for zid in list(semantic_map._zones.keys()):
+                    if zid not in new_zone_ids:
+                        del semantic_map._zones[zid]
+                # Update landmarks
+                new_lm_ids = set()
+                for ld in data.get("landmarks", []):
+                    lm = Landmark(
+                        id=ld["id"],
+                        label=ld.get("label", ""),
+                        x=float(ld.get("x", 0)),
+                        y=float(ld.get("y", 0)),
+                        zone_id=ld.get("zone_id", ""),
+                        category=ld.get("category", ""),
+                        notes=ld.get("notes", ""),
+                    )
+                    semantic_map._landmarks[lm.id] = lm
+                    new_lm_ids.add(lm.id)
+                for lid in list(semantic_map._landmarks.keys()):
+                    if lid not in new_lm_ids:
+                        del semantic_map._landmarks[lid]
+                logger.debug(f"🗺️ Synced semantic map from Server: {list(new_zone_ids)}")
+        except Exception as e:
+            logger.debug(f"🗺️ Semantic map sync failed: {e}")
+        await asyncio.sleep(30.0)
 
 
 # ── Gateway endpoint for robot pose (webapp can also poll this) ───────
@@ -3347,10 +4514,14 @@ async def startup_event():
 
     # Start robot pose tracking + push
     motion.post_motion_hook = _update_dead_reckoning  # dead-reckoning fallback
+    # Wire ObjectMemory → Server authoritative store. Must happen before
+    # the first reload()/clear() so object_memory has a server URL.
+    _set_object_memory_server_base(SERVER_BASE)
     asyncio.create_task(_push_pose_to_server())
     asyncio.create_task(_push_objects_to_server())
-    asyncio.create_task(_push_annotations_to_server())
+    asyncio.create_task(_sync_semantic_map_from_server())
     logger.info("📍 Robot pose + object memory push tasks started")
+    logger.info("🗺️ Semantic map sync from Server task started (read-only)")
 
     if MOCK_ROBOT:
         logger.info("🧪 MOCK_ROBOT=1 — skipping ROSBridge connection")
@@ -3691,67 +4862,16 @@ async def camera_stop():
     return {"status": "stopped"}
 
 # ═══════════════════════════════════════════════════════════════════
-#  Semantic Map Annotations API
+#  Semantic Map — READ-ONLY (Server owns CRUD)
 # ═══════════════════════════════════════════════════════════════════
+# Gateway no longer owns semantic map CRUD. The Server at :8080 is
+# the sole owner. Gateway syncs via _sync_semantic_map_from_server()
+# and exposes read-only access for internal use (SearchPlanner, etc.)
 
 @app.get("/annotations")
 async def get_annotations():
-    """Get all semantic zones and landmarks."""
+    """Read-only: return Gateway's cached copy of semantic map."""
     return semantic_map.to_dict()
-
-
-@app.post("/annotations/zone")
-async def upsert_zone(request: Request):
-    """Create or update a semantic zone."""
-    data = await request.json()
-    zone = Zone(
-        id=data["id"],
-        label_th=data.get("label_th", ""),
-        label_en=data.get("label_en", ""),
-        center_x=float(data.get("center_x", 0)),
-        center_y=float(data.get("center_y", 0)),
-        radius=float(data.get("radius", 0.8)),
-        expected_objects=data.get("expected_objects", []),
-        notes=data.get("notes", ""),
-        color=data.get("color", "#3b82f6"),
-    )
-    semantic_map.add_zone(zone)
-    logger.info(f"📝 Zone upserted: {zone.id} ({zone.label_th}) at ({zone.center_x:.2f}, {zone.center_y:.2f})")
-    return {"ok": True, "zone_id": zone.id}
-
-
-@app.delete("/annotations/zone/{zone_id}")
-async def delete_zone_ep(zone_id: str):
-    """Delete a semantic zone."""
-    ok = semantic_map.delete_zone(zone_id)
-    logger.info(f"🗑️ Zone {'deleted' if ok else 'not found'}: {zone_id}")
-    return {"ok": ok}
-
-
-@app.post("/annotations/landmark")
-async def upsert_landmark(request: Request):
-    """Create or update a landmark."""
-    data = await request.json()
-    lm = Landmark(
-        id=data["id"],
-        label=data.get("label", ""),
-        x=float(data.get("x", 0)),
-        y=float(data.get("y", 0)),
-        zone_id=data.get("zone_id", ""),
-        category=data.get("category", ""),
-        notes=data.get("notes", ""),
-    )
-    semantic_map.add_landmark(lm)
-    logger.info(f"📝 Landmark upserted: {lm.id} ({lm.label}) at ({lm.x:.2f}, {lm.y:.2f})")
-    return {"ok": True, "landmark_id": lm.id}
-
-
-@app.delete("/annotations/landmark/{lm_id}")
-async def delete_landmark_ep(lm_id: str):
-    """Delete a landmark."""
-    ok = semantic_map.delete_landmark(lm_id)
-    logger.info(f"🗑️ Landmark {'deleted' if ok else 'not found'}: {lm_id}")
-    return {"ok": ok}
 
 
 from pydantic import BaseModel
@@ -3979,22 +5099,28 @@ async def gw_audio(ws: WebSocket):
             if desc_query:
                 logger.info(f"🔍 Description Search: {desc_query}")
                 target_with_desc = f"{desc_query['object']} {desc_query['description']}"
-                
+
                 if _search_active:
+                    if _current_search_target == target_with_desc:
+                        logger.info(f"[DEDUP] same search '{target_with_desc}' already active — ignoring duplicate")
+                        return
                     await cancel_search()
                     await asyncio.sleep(1)
-                
+
                 # Use full description in VLM query
                 asyncio.create_task(visual_search(target_with_desc))
                 return
-            
+
             # Standard single object search
             find_target = parse_find_intent(text)
             if find_target:
                 logger.info(f"🔍 Find Object Detected: '{find_target}'")
-                
-                # Cancel any existing search
+
+                # Dedup: if same target is already active, ignore the duplicate request
                 if _search_active:
+                    if _current_search_target == find_target:
+                        logger.info(f"[DEDUP] same search '{find_target}' already active — ignoring duplicate")
+                        return
                     await cancel_search()
                     await asyncio.sleep(1)  # Wait for previous search to clean up
                 
@@ -4094,6 +5220,9 @@ async def gw_text(inp: TextIn):
     find_target = parse_find_intent(text)
     if find_target:
         if _search_active:
+            if _current_search_target == find_target:
+                logger.info(f"[DEDUP] same search '{find_target}' already active — ignoring duplicate")
+                return {"ok": True, "mode": "visual_search_active", "target": find_target}
             await cancel_search()
             await asyncio.sleep(1)
         # Start search immediately — enrichment runs inside the background task
