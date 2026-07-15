@@ -5265,3 +5265,4 @@ async def gw_text(inp: TextIn):
         logger.warning(f"⚠️ Chitchat fallback error: {e}")
     
     return {"ok": False, "reason": "no_motion_or_plan"}
+
