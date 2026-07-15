@@ -28,3 +28,5 @@ ros2 run slam_gmapping slam_gmapping \
 
 echo "SLAM exited. Cleaning up..."
 kill $LIDAR_PID $BASE_PID 2>/dev/null || true
+
+

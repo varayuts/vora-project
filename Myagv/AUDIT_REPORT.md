@@ -208,3 +208,5 @@ AMCL crash test (critical — validates SIGSEGV fix):
   [ ] Send 5x turn_right commands
   [ ] No "process has died [exit code -11]" in nav2 terminal
   [ ] AMCL still publishing: ros2 topic echo /amcl_pose 2>/dev/null | head -10
+
+

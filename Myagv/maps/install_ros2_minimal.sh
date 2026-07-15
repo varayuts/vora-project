@@ -57,3 +57,5 @@ echo " Installation complete!"
 echo " Run: source ~/.bashrc"
 echo " Then: bash view_map.sh"
 echo "========================================="
+
+

@@ -28,3 +28,5 @@ echo "Press Ctrl+C to stop."
 echo ""
 
 python3 "$SCRIPT_DIR/ros_camera_pub.py"
+
+

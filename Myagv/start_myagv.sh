@@ -340,3 +340,5 @@ echo "  pkill -f rosbridge"
 echo "  pkill -f command_executor"
 echo "  pkill -f send_audio_to_gateway"
 echo ""
+
+

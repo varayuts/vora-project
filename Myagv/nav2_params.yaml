@@ -310,3 +310,5 @@ lifecycle_manager_localization:
       - map_server
       - amcl
     bond_timeout: 30.0  # was 10.0 — match navigation lifecycle_manager
+
+

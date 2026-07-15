@@ -76,3 +76,5 @@ echo ""
 echo "Map server and RViz2 are running."
 echo "Press Ctrl+C to stop."
 wait
+
+

@@ -13,3 +13,5 @@ echo "Saving map to: $OUTDIR/$NAME.(pgm|yaml)"
 ros2 run nav2_map_server map_saver_cli -f "$OUTDIR/$NAME"
 echo "Done."
 ls -lh "$OUTDIR" | tail -n 5
+
+

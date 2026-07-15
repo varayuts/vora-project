@@ -306,3 +306,5 @@ ros2 topic echo /vora/result
 ## Notes
 - Keep this on the robot only. Gateway code stays on the notebook gateway.
 - When your vision/mapping modules finish, have them publish `/vora/result` with the same `query_id`.
+
+

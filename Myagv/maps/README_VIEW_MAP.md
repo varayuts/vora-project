@@ -150,3 +150,5 @@ lifecycle_manager ต้อง start ก่อน map_server — script `view_ma
 ros2 lifecycle set /map_server configure
 ros2 lifecycle set /map_server activate
 ```
+
+

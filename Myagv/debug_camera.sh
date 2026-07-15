@@ -275,3 +275,5 @@ echo "  Camera → usb_cam (MJPEG) → /image_raw → camera_bridge → /camera/
 echo ""
 info "Gateway should subscribe to: /camera/compressed (sensor_msgs/CompressedImage)"
 echo ""
+
+
