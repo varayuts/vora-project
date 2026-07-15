@@ -210,3 +210,4 @@ if __name__ == "__main__":
     # รันเซิร์ฟเวอร์ที่ port ตรงกับ config
     api_port = int(os.getenv("VORA_API_PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=api_port)
+
