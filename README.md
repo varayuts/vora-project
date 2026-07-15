@@ -87,26 +87,44 @@ Networking:     Tailscale (gateway-robot VPN tunnel)
 
 ## 🚀 Setup & Run
 
+The system is deployed in 3 distributed phases across your infrastructure:
+
 ### Prerequisites
-- Jetson Nano (2023) with JetPack 5.x
-- ROS2 Galactic installed
-- Ollama running Gemma-3 27B + Qwen3-VL 8B
+- **Server:** GPU-enabled machine running Ollama (Gemma-3 27B + Qwen3-VL 8B)
+- **Robot:** MYAGV Elephant Jetson nano 2023 with ROS2 Galactic installed
+- **Network:** Connected via Tailscale VPN or Local LAN
 
 ### Installation
 ```bash
-git clone https://github.com/varayuts/VORA-robot.git
-cd VORA-robot
-pip install -r requirements.txt
+git clone https://github.com/varayuts/vora-project.git
+cd vora-project
+conda env create -f environment.yml
+conda activate vora
 ```
 
-### Run Gateway Server
+### Phase 1: AI Server
+Runs the heavy AI pipelines (Whisper STT, Gemma LLM, Qwen VLM, Typhoon TTS).
 ```bash
-python gateway/main.py
+# Start the AI backend server
+cd app
+python main.py
 ```
 
-### Run ROS2 Navigation Stack
+### Phase 2: Gateway Server (Bridge)
+Acts as the low-latency WebSocket bridge between the AI Server and the Robot.
 ```bash
-ros2 launch vora_bringup vora.launch.py
+# Start the gateway sync node
+cd Gateway
+./start_gateway.sh
+```
+
+### Phase 3: Robot Hardware (MYAGV)
+Launches the ROS2 navigation stack, AMCL localization, and motor drivers on the Jetson Nano.
+```bash
+cd Myagv
+./start_myagv.sh
+# In a new terminal, launch navigation:
+./start_nav2.sh
 ```
 
 ---
@@ -114,16 +132,18 @@ ros2 launch vora_bringup vora.launch.py
 ## 📁 Project Structure
 
 ```
-VORA-robot/
-├── gateway/            # FastAPI + WebSocket server
-│   ├── main.py
-│   ├── llm_handler.py  # Gemma-3 + Qwen3-VL integration
-│   └── memory.py       # Semantic memory management
-├── ros2_ws/            # ROS2 workspace
-│   └── vora_bringup/   # Launch files & Nav2 config
-├── stt/                # Whisper Thonburian STT module
-├── tts/                # gTTS response module
-└── requirements.txt
+vora-project/
+├── app/                  # Phase 1: AI Server (LLM, VLM, STT, TTS)
+│   ├── main.py           # FastAPI server entry point
+│   ├── core/             # Intent reasoning & semantic memory
+│   └── frontend/         # Web UI chat interface
+├── Gateway/              # Phase 2: Gateway Bridge
+│   ├── gateway/main.py   # WebSocket handler & ROS2 client wrapper
+│   └── start_gateway.sh  # Deployment script
+└── Myagv/                # Phase 3: ROS2 Robotics Stack
+    ├── start_myagv.sh    # Base hardware & sensor bringup
+    ├── start_nav2.sh     # ROS2 Galactic Nav2 stack launcher
+    └── maps/             # Pre-mapped environments (lab_room.pgm)
 ```
 
 ---
