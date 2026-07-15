@@ -5,7 +5,7 @@
 **Final-Year Project · KMUTNB Robotics Engineering**
 
 [![Python](https://img.shields.io/badge/Python-3.10-3776AB?style=flat-square&logo=python)](https://python.org)
-[![ROS2](https://img.shields.io/badge/ROS2-Humble-22314E?style=flat-square&logo=ros)](https://docs.ros.org)
+[![ROS2](https://img.shields.io/badge/ROS2-Galactic-22314E?style=flat-square&logo=ros)](https://docs.ros.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
@@ -47,7 +47,7 @@ The system integrates 4 AI models in a real-time pipeline — all running on edg
                     🔊 gTTS (Text-to-Speech)
                            │
                     🤖 Robot Action
-              (Elephant myAGV · Jetson Nano)
+              (MYAGV Elephant Jetson nano 2023)
 ```
 
 ---
@@ -69,8 +69,8 @@ The system integrates 4 AI models in a real-time pipeline — all running on edg
 ```
 Backend:        FastAPI · WebSocket · Python 3.10
 AI Inference:   Ollama (local LLM/VLM serving)
-Robotics:       ROS2 Humble · Nav2 · AMCL · TF2
-Hardware:       Jetson Nano 2023 · myAGV (Elephant Robotics)
+Robotics:       ROS2 Galactic · Nav2 · AMCL · TF2
+Hardware:       MYAGV Elephant Jetson nano 2023
 Networking:     Tailscale (gateway-robot VPN tunnel)
 ```
 
@@ -89,7 +89,7 @@ Networking:     Tailscale (gateway-robot VPN tunnel)
 
 ### Prerequisites
 - Jetson Nano (2023) with JetPack 5.x
-- ROS2 Humble installed
+- ROS2 Galactic installed
 - Ollama running Gemma-3 27B + Qwen3-VL 8B
 
 ### Installation
