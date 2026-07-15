@@ -166,3 +166,4 @@ def answer(
 
     if session_id: MEMORY.add(session_id, "assistant", reply)
     return reply, sources
+

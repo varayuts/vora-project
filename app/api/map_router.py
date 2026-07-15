@@ -565,3 +565,5 @@ async def push_annotations_legacy(request: Request):
 
 # ── Load map on import ────────────────────────────────────────────────
 _load_map()
+
+

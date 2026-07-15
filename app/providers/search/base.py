@@ -8,3 +8,5 @@ class SearchProvider(ABC):
     def search(self, query: str, *, engine: Optional[str] = None,
                language: Optional[str] = None, num: int = 5) -> List[SearchResult]:
         ...
+
+

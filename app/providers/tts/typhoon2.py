@@ -55,3 +55,5 @@ class Typhoon2Client:
             r.raise_for_status()
             # สมมุติได้ base64 หรือ bytes กลับมา—ที่นี่สมมุติส่ง bytes ตรง ๆ
             return r.content
+
+

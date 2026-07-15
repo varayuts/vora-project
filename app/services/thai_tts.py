@@ -178,3 +178,5 @@ thai_tts = ThaiTTSService()
 async def speak_thai(text: str, speed: float = 1.0) -> bytes:
     """Quick function to synthesize Thai speech"""
     return await thai_tts.synthesize(text, speed=speed)
+
+

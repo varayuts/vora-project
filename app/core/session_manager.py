@@ -321,3 +321,5 @@ def get_session(session_id: str) -> Optional[Session]:
 def get_or_create(session_id: str, device_type: str = "unknown") -> Session:
     """Quick function to get or create session"""
     return session_manager.get_or_create_session(session_id, device_type)
+
+

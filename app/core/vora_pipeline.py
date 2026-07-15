@@ -557,3 +557,5 @@ def get_quick_command(text: str) -> Optional[RobotCommand]:
         if key in text_lower:
             return cmd
     return None
+
+

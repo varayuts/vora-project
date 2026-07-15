@@ -238,3 +238,5 @@ class SemanticMap:
 
 # Singleton — loaded once at import time
 semantic_map = SemanticMap()
+
+

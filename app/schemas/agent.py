@@ -49,3 +49,5 @@ class RobotCommand(BaseModel):
     cmd: str = Field(..., description="Command name")
     params: Dict[str, Any] = Field(default_factory=dict, description="Command parameters")
     priority: int = Field(2, description="Priority (0=emergency, 1=high, 2=normal, 3=low)")
+
+

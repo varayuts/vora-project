@@ -37,3 +37,5 @@ class SearxNGProvider(SearchProvider):
                 engine=item.get("engine") or "",
             ))
         return out
+
+

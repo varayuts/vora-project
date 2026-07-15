@@ -121,3 +121,4 @@ async def generate_plan(req: RobotPlanRequest):
     except Exception as e:
         logger.error(f"Planner Error: {e}")
         raise HTTPException(status_code=500, detail="ไม่สามารถสร้างแผนงานได้")
+

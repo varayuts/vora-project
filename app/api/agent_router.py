@@ -46,3 +46,5 @@ def memory_clear(req: MemoryClearRequest):
 def memory_get(session_id: str = Query(..., alias="sid")):
     turns = [{"role": t.role, "text": t.text, "ts": t.ts} for t in MEMORY.get_turns(session_id)]
     return MemoryState(session_id=session_id, turns=turns)
+
+

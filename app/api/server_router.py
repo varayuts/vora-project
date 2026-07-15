@@ -424,3 +424,5 @@ async def update_object_location(obj_name: str, location: str, confidence: float
         "location": location,
         "confidence": confidence
     }
+
+

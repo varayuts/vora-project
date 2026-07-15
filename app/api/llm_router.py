@@ -19,3 +19,5 @@ def generate(req: GenerateRequest):
         return GenerateResponse(response=resp)
     except Exception as e:
         raise HTTPException(500, f"LLM error: {e}")
+
+

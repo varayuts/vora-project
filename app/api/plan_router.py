@@ -113,3 +113,4 @@ async def plan_from_text(inp: PlanIn) -> PlanOut:
 @router.post("/plan_from_text_compat", response_model=PlanOut)
 async def plan_from_text_compat(inp: PlanIn) -> PlanOut:
     return await plan_from_text(inp)
+

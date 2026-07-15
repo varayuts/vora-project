@@ -253,3 +253,5 @@ class OllamaProvider(LLMProvider):
         return await asyncio.to_thread(
             self.generate_json, system, prompt, temperature, top_p, max_tokens, timeout
         )
+
+

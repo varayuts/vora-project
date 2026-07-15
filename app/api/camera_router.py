@@ -146,3 +146,5 @@ async def capture_frame():
         "path": str(filepath),
         "size": len(_frame),
     }
+
+

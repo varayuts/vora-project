@@ -43,3 +43,5 @@ class Settings:
     GATEWAY_URL: str = os.getenv("GATEWAY_URL", "http://192.168.0.60:9001")
 
 settings = Settings()
+
+

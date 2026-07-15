@@ -53,3 +53,5 @@ async def fetch_many(urls: list[str], concurrency: int = 5) -> list[dict]:
             async with sem:
                 return await fetch_one(client, u)
         return await asyncio.gather(*[run(u) for u in urls])
+
+

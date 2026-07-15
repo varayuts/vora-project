@@ -377,3 +377,4 @@ async def ws_stt(ws: WebSocket):
 
 def register_ws(app: FastAPI):
     app.include_router(router)
+

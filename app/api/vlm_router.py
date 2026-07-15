@@ -293,3 +293,5 @@ async def upload_image(file: UploadFile = File(...)):
         "size_kb": size_kb,
         "url": f"/vlm/image/{file.filename}",
     }
+
+
