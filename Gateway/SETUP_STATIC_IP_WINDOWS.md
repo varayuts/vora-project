@@ -246,3 +246,5 @@ After setting static IP:
 | MyAGV | 192.168.0.111 | Static | ✅ Done |
 
 **Recommendation:** Set static IP on Gateway WiFi (192.168.0.60) for reliable local network communication.
+
+

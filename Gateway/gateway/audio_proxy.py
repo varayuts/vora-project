@@ -101,3 +101,4 @@ async def upstream_stt_proxy(server_ws: str, client_ws: WebSocket, upstream_init
             await client_ws.send_text(json.dumps({"type": "error", "detail": "Cannot connect to STT server"}))
         except:
             pass
+

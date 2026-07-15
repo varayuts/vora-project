@@ -449,3 +449,5 @@ class SpatialMemory:
 
 # ── Singleton ──
 spatial_memory = SpatialMemory()
+
+

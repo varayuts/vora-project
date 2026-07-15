@@ -413,3 +413,5 @@ class SearchPlanner:
         3 positions, 120 degrees apart — covers full 360 with camera FOV overlap.
         """
         return [0.0, 120.0, -120.0]
+
+

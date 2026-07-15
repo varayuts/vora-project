@@ -19,3 +19,5 @@ VORA/gateway_nav — Notebook (Gateway + Planner Executor)
 
 3) รัน
    uvicorn main:app --host 0.0.0.0 --port 9001 --reload
+
+

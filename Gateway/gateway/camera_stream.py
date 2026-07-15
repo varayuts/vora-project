@@ -385,3 +385,5 @@ def stop_camera():
     if _camera:
         _camera.stop()
         _camera = None
+
+

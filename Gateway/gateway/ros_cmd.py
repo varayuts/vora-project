@@ -249,3 +249,5 @@ async def ensure_ros(rosbridge_url: str) -> roslibpy.Ros:
             # continues retrying the WebSocket in the background.
             raise RuntimeError("Cannot connect to rosbridge")
         return _shared_ros
+
+

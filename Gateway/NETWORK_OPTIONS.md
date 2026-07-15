@@ -236,3 +236,5 @@ curl https://user.tail87d9fe.ts.net/health  # Should reply
 - [Gateway Static IP Setup (Windows)](./SETUP_STATIC_IP_WINDOWS.md)
 - [MyAGV Static IP Setup (Linux)](../Myagv/SETUP_STATIC_IP.md)
 - [Full Deployment Guide](../DEPLOYMENT.md)
+
+

@@ -14,3 +14,5 @@ def pose_stamped(x: float, y: float, theta: float, frame_id: str = "map"):
             "orientation": q,
         },
     }
+
+

@@ -323,3 +323,5 @@ class TestJsonRoundtrip:
         saved = json.loads(om.MEMORY_FILE.read_text(encoding="utf-8"))
         assert "observer_x" in saved["pen"][0]
         assert "robot_x" not in saved["pen"][0]
+
+

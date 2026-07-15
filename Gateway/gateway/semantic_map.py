@@ -232,3 +232,5 @@ class SemanticMap:
 
 # ── Singleton ────────────────────────────────────────────────────
 semantic_map = SemanticMap()
+
+

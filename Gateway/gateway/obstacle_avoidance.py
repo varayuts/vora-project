@@ -978,3 +978,5 @@ async def test_obstacle_with_image(image_filename: str, goal: str = "") -> Dict[
                 return {"error": f"HTTP {resp.status_code}", "detail": resp.text}
     except Exception as e:
         return {"error": str(e)}
+
+

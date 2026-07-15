@@ -126,3 +126,5 @@ while kill -0 $GATEWAY_PID 2>/dev/null; do
 done
 
 cleanup
+
+

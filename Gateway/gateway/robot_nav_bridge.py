@@ -354,3 +354,5 @@ class RobotNavBridge:
                 self._status_topic.unsubscribe()
         except Exception:
             pass
+
+

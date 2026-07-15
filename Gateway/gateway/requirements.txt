@@ -8,3 +8,5 @@ paho-mqtt
 sounddevice
 numpy
 Pillow
+
+
