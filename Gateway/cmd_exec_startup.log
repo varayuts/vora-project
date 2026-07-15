@@ -1,8 +1,0 @@
-[INFO] [1776422826.567825745] [vora_command_executor]: ============================================================
-[INFO] [1776422826.569762455] [vora_command_executor]: 🤖 VORA Command Executor - Ready
-[INFO] [1776422826.572785907] [vora_command_executor]: ============================================================
-[INFO] [1776422826.574713762] [vora_command_executor]: 📥 Listening: /vora/command
-[INFO] [1776422826.576317599] [vora_command_executor]: 📤 Status:    /vora/status
-[INFO] [1776422826.578011647] [vora_command_executor]: 📤 Result:    /vora/result
-[INFO] [1776422826.579613870] [vora_command_executor]: 🚨 Safety:    /cmd_vel
-[INFO] [1776422826.581214009] [vora_command_executor]: ============================================================
